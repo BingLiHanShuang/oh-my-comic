@@ -1,0 +1,21 @@
+# Web framework
+flask>=3.0.0
+
+# LLM client (connects to local llama-server)
+openai>=1.30.0
+
+# SDXL image generation (Diffusers)
+torch>=2.1.0
+diffusers>=0.27.0
+transformers>=4.38.0
+accelerate>=0.27.0
+safetensors>=0.4.0
+xformers>=0.0.23
+
+# Qwen Edit image generation (stable_diffusion_cpp)
+stable-diffusion-cpp-python>=0.2.0
+
+# Utilities
+requests>=2.31.0
+python-dotenv>=1.0.0
+Pillow>=10.0.0

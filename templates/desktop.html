@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>oh-my-comic</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="desktop-body">
+
+  <!-- Full-screen Background -->
+  <div id="bg-layer" class="bg-layer">
+    <div id="bg-current" class="bg-image bg-active"></div>
+    <div id="bg-next"    class="bg-image"></div>
+    <div class="bg-overlay"></div>
+  </div>
+
+  <!-- Top-right Controls -->
+  <div class="desktop-controls">
+    <button id="toggle-comic-btn" class="control-btn" title="隐藏/显示连环画" onclick="toggleComic()">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="3" width="20" height="14" rx="2"/>
+        <path d="M8 21h8M12 17v4"/>
+      </svg>
+      <span id="toggle-label">隐藏连环画</span>
+    </button>
+    <div id="desktop-status" class="desktop-status"></div>
+  </div>
+
+  <!-- Comic Strip Overlay -->
+  <div id="comic-overlay" class="comic-overlay">
+
+    <!-- Segment Info -->
+    <div id="segment-info" class="segment-info">
+      <span id="segment-counter">—</span>
+    </div>
+
+    <!-- Comic Strip -->
+    <div id="comic-strip" class="comic-strip">
+
+      <!-- Previous segment thumbnails -->
+      <div id="prev-group" class="comic-group comic-group-side comic-group-prev">
+        <div class="group-label">上一段</div>
+        <div id="prev-images" class="group-images"></div>
+      </div>
+
+      <!-- Current segment (large) -->
+      <div id="curr-group" class="comic-group comic-group-center">
+        <div class="group-label" id="curr-label">当前段</div>
+        <div id="curr-images" class="group-images group-images-center"></div>
+      </div>
+
+      <!-- Next segment thumbnails -->
+      <div id="next-group" class="comic-group comic-group-side comic-group-next">
+        <div class="group-label">下一段</div>
+        <div id="next-images" class="group-images"></div>
+      </div>
+
+    </div><!-- /comic-strip -->
+  </div><!-- /comic-overlay -->
+
+  <script src="/static/js/desktop.js"></script>
+</body>
+</html>

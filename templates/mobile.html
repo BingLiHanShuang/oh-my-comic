@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>oh-my-comic</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="mobile-body">
+
+  <!-- Header -->
+  <header class="mobile-header">
+    <h1 id="story-title">oh-my-comic</h1>
+    <div id="header-status" class="header-status"></div>
+  </header>
+
+  <!-- Story Content -->
+  <main id="story-container" class="story-container">
+    <div id="segments-list" class="segments-list">
+      <!-- Segments injected by JS -->
+    </div>
+    <div id="empty-hint" class="empty-hint">
+      <div class="empty-icon">📖</div>
+      <p>故事还没有开始。</p>
+      <p>在下方输入你希望故事如何开始，然后点击「生成」。</p>
+    </div>
+  </main>
+
+  <!-- Status Bar -->
+  <div id="status-bar" class="status-bar status-info">
+    <span id="status-text">正在连接服务器...</span>
+  </div>
+
+  <!-- Input Area -->
+  <footer id="input-area" class="input-area">
+    <div class="input-row">
+      <textarea
+        id="direction-input"
+        class="direction-input"
+        placeholder="输入你希望下一段故事如何发展..."
+        rows="2"
+      ></textarea>
+      <button id="generate-btn" class="generate-btn" onclick="sendGenerate()">
+        <span id="btn-text">生成</span>
+        <span id="btn-spinner" class="spinner hidden"></span>
+      </button>
+    </div>
+    <div id="serve-only-hint" class="serve-only-hint hidden">
+      当前为只读模式，无法生成新内容。
+    </div>
+  </footer>
+
+  <script src="/static/js/mobile.js"></script>
+</body>
+</html>
