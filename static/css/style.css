@@ -69,27 +69,101 @@ html, body {
   flex-shrink: 0;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   border-bottom: 1px solid var(--border);
-  padding: 14px 18px 10px;
+  padding: 10px 14px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .mobile-header h1 {
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: var(--accent);
   letter-spacing: 0.04em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .header-status {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Creative Mode Toggle ── */
+.creative-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.creative-toggle input[type="checkbox"] {
+  display: none;
+}
+
+.creative-toggle-track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  transition: background var(--transition), border-color var(--transition);
+  flex-shrink: 0;
+}
+
+.creative-toggle input:checked ~ .creative-toggle-track {
+  background: var(--accent-dark);
+  border-color: var(--accent);
+}
+
+.creative-toggle input:disabled ~ .creative-toggle-track {
+  opacity: 0.4;
+}
+
+.creative-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: rgba(255,255,255,0.6);
+  border-radius: 50%;
+  transition: left var(--transition), background var(--transition);
+}
+
+.creative-toggle input:checked ~ .creative-toggle-track .creative-toggle-thumb {
+  left: 18px;
+  background: #fff;
+}
+
+.creative-toggle-text {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: color var(--transition);
+}
+
+.creative-toggle input:checked ~ .creative-toggle-text,
+.creative-toggle-text.active {
+  color: var(--accent);
 }
 
 /* ── Story Container ── */
@@ -110,7 +184,28 @@ html, body {
 .segments-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
+}
+
+/* ── User message bubble ── */
+.user-bubble {
+  align-self: flex-end;
+  max-width: 82%;
+  background: linear-gradient(135deg, #2a4a7a 0%, #1e3a6a 100%);
+  border: 1px solid rgba(100,150,220,0.3);
+  border-radius: 16px 16px 4px 16px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: #d8e8ff;
+  word-break: break-word;
+  white-space: pre-wrap;
+  animation: slideInRight 0.3s ease both;
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 .segment-card {
@@ -226,13 +321,78 @@ html, body {
   flex-shrink: 0;
   background: linear-gradient(0deg, #12121e 0%, #1a1a2e 100%);
   border-top: 1px solid var(--border);
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
 }
+
+/* ── Image preview strip ── */
+.image-preview-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 6px;
+  margin-bottom: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.image-preview-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.image-preview-name {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-remove-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color var(--transition);
+}
+
+.image-remove-btn:hover { color: #f56565; }
 
 .input-row {
   display: flex;
   gap: 8px;
   align-items: flex-end;
+}
+
+/* ── Upload button ── */
+.upload-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.upload-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .direction-input {
@@ -457,12 +617,56 @@ html, body {
   font-size: 0.75rem;
 }
 
-/* ── Image Containers ── */
+/* ── Image Containers — base ── */
 .group-images {
   display: flex;
   gap: var(--comic-inner-gap);
   align-items: center;
   justify-content: center;
+}
+
+/* ── Center group: flex, cards side-by-side ── */
+.group-images-center {
+  display: flex;
+  gap: var(--comic-inner-gap);
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Side group: stacked by default, expand on hover ── */
+.group-images-side {
+  display: block;
+  position: relative;
+  /* Pre-reserve the full hover-expanded width so layout never shifts on hover */
+  width:  calc(var(--comic-side-w) * 2 + var(--comic-inner-gap));
+  height: var(--comic-side-h);
+  flex-shrink: 0;
+}
+
+/* Cards inside side group are absolutely positioned */
+.group-images-side .comic-card-side {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transition: left var(--transition), box-shadow var(--transition),
+              border-color var(--transition);
+}
+
+/* First card sits at the left edge */
+.group-images-side .comic-card-side:nth-child(1) {
+  z-index: 1;
+}
+
+/* Second card peeks out by half its width (stacked look) */
+.group-images-side .comic-card-side:nth-child(2) {
+  left: calc(var(--comic-side-w) * 0.5);
+  z-index: 2;
+}
+
+/* On hover: slide second card to its natural side-by-side position */
+.group-images-side:hover .comic-card-side:nth-child(2) {
+  left: calc(var(--comic-side-w) + var(--comic-inner-gap));
 }
 
 /* ── Individual Comic Cards ── */
@@ -473,8 +677,7 @@ html, body {
   border: 1px solid var(--border);
   position: relative;
   flex-shrink: 0;
-  transition: border-color var(--transition), box-shadow var(--transition),
-              width 0.2s ease, height 0.2s ease;
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
 /* Side card — size driven by CSS variables */
@@ -544,6 +747,13 @@ html, body {
   text-align: center;
   border: 1px dashed rgba(255,255,255,0.1);
   border-radius: var(--radius-sm);
+}
+
+/* Inside a side container, the empty placeholder is also absolute */
+.group-images-side .group-empty {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 /* ── Animations ── */

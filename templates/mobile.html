@@ -11,7 +11,17 @@
   <!-- Header -->
   <header class="mobile-header">
     <h1 id="story-title">oh-my-comic</h1>
-    <div id="header-status" class="header-status"></div>
+    <div class="header-right">
+      <!-- Creative mode toggle -->
+      <label class="creative-toggle" id="creative-toggle-label" title="创作模式：开启后连续写文本，关闭后统一生图">
+        <input type="checkbox" id="creative-mode-checkbox" onchange="onCreativeModeChange(this)" />
+        <span class="creative-toggle-track">
+          <span class="creative-toggle-thumb"></span>
+        </span>
+        <span class="creative-toggle-text" id="creative-toggle-text">创作模式</span>
+      </label>
+      <div id="header-status" class="header-status"></div>
+    </div>
   </header>
 
   <!-- Story Content -->
@@ -33,7 +43,25 @@
 
   <!-- Input Area -->
   <footer id="input-area" class="input-area">
+    <!-- Image preview (shown when an image is selected) -->
+    <div id="image-preview-area" class="image-preview-area hidden">
+      <img id="image-preview-thumb" class="image-preview-thumb" src="" alt="预览" />
+      <span id="image-preview-name" class="image-preview-name"></span>
+      <button class="image-remove-btn" onclick="removeSelectedImage()" title="移除图片">✕</button>
+    </div>
+
     <div class="input-row">
+      <!-- Image upload button -->
+      <label class="upload-btn" id="upload-btn-label" title="上传图片（最多 1 张）">
+        <input type="file" id="image-file-input" accept="image/*" style="display:none"
+               onchange="onImageSelected(this)" />
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="16"/>
+          <line x1="8" y1="12" x2="16" y2="12"/>
+        </svg>
+      </label>
+
       <textarea
         id="direction-input"
         class="direction-input"

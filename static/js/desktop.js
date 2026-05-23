@@ -13,6 +13,14 @@
   var lastStatusMsg = '';
   var POLL_INTERVAL = 1000;
 
+  // ── Layout constants ───────────────────────────────────
+  // Character image aspect ratio (width / height).
+  // Change this when switching to a different generation resolution.
+  // 758x1024 → 0.7402   |   768x1024 → 0.75   |   1080x1920 → 0.5625
+  var CHARACTER_ASPECT    = 758 / 1024;
+  var CENTER_HEIGHT_RATIO = 0.86;   // center image height as fraction of viewport height
+  var SIDE_HEIGHT_RATIO   = 0.46;   // max side image height as fraction of viewport height
+
   // Track what we've already rendered to avoid unnecessary DOM updates
   var renderedIndex = -1;
   var renderedSegCount = 0;
@@ -52,8 +60,8 @@
   }
 
   // ── Elapsed seconds helper ─────────────────────────────
-  function formatStatusWithElapsed(status, generating) {
-    if (!generating || !status.timestamp) return status.message;
+  function formatStatusWithElapsed(status, busy) {
+    if (!busy || !status.timestamp) return status.message;
     var elapsed = Math.floor(Date.now() / 1000 - status.timestamp);
     if (elapsed < 3) return status.message;
     return status.message + ' (' + elapsed + 's)';
@@ -64,11 +72,13 @@
     storyState = data;
 
     // Status — refresh every poll so elapsed seconds update
+    // busy = generating OR batch imaging (both show elapsed timer)
     var status = data.latest_status || {};
+    var busy   = !!data.is_generating || !!data.is_batch_imaging;
     if (status.message) {
       lastStatusMsg = status.message;
       setDesktopStatus(
-        formatStatusWithElapsed(status, !!data.is_generating),
+        formatStatusWithElapsed(status, busy),
         status.type || 'info'
       );
     }
@@ -160,6 +170,9 @@
     renderGroup(currImages, findSegment(currentIndex),     'center');
     renderGroup(nextImages, findSegment(currentIndex + 1), 'side');
 
+    // Recalculate sizing in case character count changed for current segment
+    updateComicSizing();
+
     // Also update background if it just became available
     var seg = findSegment(currentIndex);
     if (seg && seg.background_image && seg.background_image.status === 'done') {
@@ -177,6 +190,15 @@
 
   function renderGroup(container, seg, size) {
     container.innerHTML = '';
+
+    // Apply layout class so CSS can handle stacking vs flex
+    if (size === 'side') {
+      container.classList.add('group-images-side');
+      container.classList.remove('group-images-center');
+    } else {
+      container.classList.add('group-images-center');
+      container.classList.remove('group-images-side');
+    }
 
     if (!seg) {
       var empty = document.createElement('div');
@@ -262,33 +284,55 @@
     return Math.max(lo, Math.min(hi, val));
   }
 
+  function getVisibleCharacterCount(idx) {
+    var seg = findSegment(idx);
+    if (!seg) return 1;
+    var chars = seg.character_images || [];
+    return Math.max(1, Math.min(2, chars.length || 1));
+  }
+
   function updateComicSizing() {
     var vw = window.innerWidth;
     var vh = window.innerHeight;
 
-    // Group gap between left / center / right groups
-    var groupGap  = clamp(Math.round(vw * 0.014), 20, 48);
-    // Inner gap between two cards within the same group
-    var innerGap  = clamp(Math.round(vw * 0.005), 8, 18);
+    var groupGap = clamp(Math.round(vw * 0.018), 20, 56);
+    var innerGap = clamp(Math.round(vw * 0.005), 6, 16);
 
-    // Worst case: 2 side cards + 2 center cards + 2 side cards
-    // total = 2*sideW + innerGap + 2*centerW + innerGap + 2*sideW + innerGap + 2*groupGap
-    // sideW = centerW * 2/3
-    // total = 4*(2/3)*centerW + 2*centerW + 3*innerGap + 2*groupGap
-    //       = (8/3 + 2)*centerW + 3*innerGap + 2*groupGap
-    //       = (14/3)*centerW + 3*innerGap + 2*groupGap
-    var usableW   = vw * 0.96;
-    var centerByW = (usableW - 3 * innerGap - 2 * groupGap) / (14 / 3);
+    var centerCount = getVisibleCharacterCount(currentIndex);
 
-    // Height constraint: center card should not exceed 62% of viewport height
-    var centerByH = vh * 0.62 * (3 / 4);   // 3:4 portrait ratio → width = height * 3/4
+    // ── Step 1: Center image — height-first ──────────────
+    var maxCenterH  = vh * CENTER_HEIGHT_RATIO;
+    var centerWByH  = maxCenterH * CHARACTER_ASPECT;
 
-    var centerW = Math.floor(Math.min(centerByW, centerByH));
-    centerW = clamp(centerW, 160, 640);
+    // ── Step 2: Ensure room for side groups ──────────────
+    // Side container pre-reserves hover-expanded width = 2*sideW + innerGap.
+    // Minimum sideW = 60 px.
+    var minSideW          = 60;
+    var minSideContainerW = 2 * minSideW + innerGap;
+    var maxCenterTotalW   = vw * 0.96 - 2 * minSideContainerW - 2 * groupGap;
 
-    var centerH = Math.round(centerW * 4 / 3);
-    var sideW   = Math.round(centerW * 2 / 3);
-    var sideH   = Math.round(sideW   * 4 / 3);
+    var centerTotalWByH = centerCount * centerWByH + (centerCount - 1) * innerGap;
+    var centerTotalW    = Math.min(centerTotalWByH, maxCenterTotalW);
+
+    var centerW = Math.floor(
+      centerCount === 1
+        ? centerTotalW
+        : (centerTotalW - innerGap) / centerCount
+    );
+    centerW = clamp(centerW, 120, 900);
+    var centerH  = Math.round(centerW / CHARACTER_ASPECT);
+    centerTotalW = centerCount * centerW + (centerCount - 1) * innerGap;
+
+    // ── Step 3: Side images — fill remaining space ───────
+    // Layout: [sideContainer] gap [centerContainer] gap [sideContainer]
+    // sideContainer width = 2*sideW + innerGap  (pre-reserved for hover expand)
+    // Total = 2*(2*sideW + innerGap) + 2*groupGap + centerTotalW
+    //       = 4*sideW + 2*innerGap + 2*groupGap + centerTotalW
+    var sideWByW = (vw * 0.96 - 2 * innerGap - 2 * groupGap - centerTotalW) / 4;
+    var sideWByH = vh * SIDE_HEIGHT_RATIO * CHARACTER_ASPECT;
+    var sideW    = Math.floor(Math.min(sideWByW, sideWByH));
+    sideW = clamp(sideW, 60, 500);
+    var sideH = Math.round(sideW / CHARACTER_ASPECT);
 
     var root = document.documentElement;
     root.style.setProperty('--comic-center-w',  centerW  + 'px');
