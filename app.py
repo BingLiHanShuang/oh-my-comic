@@ -87,6 +87,7 @@ SDXL_BACKGROUND_HEIGHT = int(os.getenv("SDXL_BACKGROUND_HEIGHT", "720"))
 
 QWEN_EDIT_DIFFUSION_MODEL_PATH = os.getenv("QWEN_EDIT_DIFFUSION_MODEL_PATH", "/path/to/diffusion.gguf")
 QWEN_EDIT_LLM_PATH             = os.getenv("QWEN_EDIT_LLM_PATH",             "/path/to/llm.gguf")
+QWEN_EDIT_F2P_LORA_PATH        = os.getenv("QWEN_EDIT_F2P_LORA_PATH",        "/path/to/dir_of_F2P.safetensors")
 QWEN_EDIT_VAE_PATH             = os.getenv("QWEN_EDIT_VAE_PATH",             "/path/to/vae.safetensors")
 QWEN_EDIT_CLIP_VISION_PATH     = os.getenv("QWEN_EDIT_CLIP_VISION_PATH",     "/path/to/clip.gguf")
 QWEN_EDIT_WIDTH          = int(os.getenv("QWEN_EDIT_WIDTH",          "768"))
@@ -907,6 +908,7 @@ def _load_qwen_edit():
         llm_path=QWEN_EDIT_LLM_PATH,
         vae_path=QWEN_EDIT_VAE_PATH,
         clip_vision_path=QWEN_EDIT_CLIP_VISION_PATH,
+        lora_model_dir=QWEN_EDIT_F2P_LORA_PATH,
         qwen_image_zero_cond_t=True,
         diffusion_flash_attn=True,
         offload_params_to_cpu=True,
@@ -937,7 +939,7 @@ def run_qwen_edit_queue(tasks: List[ImageTask]):
         )
         try:
             output = sd.generate_image(
-                prompt=task.prompt, ref_images=str(task.ref_path),
+                prompt="<lora:F2P:1>, " + task.prompt, ref_images=str(task.ref_path),
                 cfg_scale=QWEN_EDIT_CFG_SCALE, sample_steps=QWEN_EDIT_SAMPLE_STEPS,
                 sample_method=QWEN_EDIT_SAMPLE_METHOD, scheduler=QWEN_EDIT_SCHEDULER,
                 width=task.width, height=task.height, seed=QWEN_EDIT_SEED,

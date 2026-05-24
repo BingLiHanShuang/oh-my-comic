@@ -37,7 +37,7 @@
 ```
 用户上传 1 张图片 + 文本
 → LLM（需要 LLAMA_MMPROJ_MODEL）解析图片内容
-→ 图片描述 + 用户文本合并为故事输入
+→ 图片描述 + 用户文本（必须明说当前这段故事只能有图中角色一人）合并为故事输入
 → LLM 生成故事 JSON
 → 只生成背景图，不生成角色图
 → 如果 JSON 中有 character_prompts[0].id，上传图片自动绑定为该角色立绘
@@ -91,13 +91,7 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-至少需要填写：
-
-```env
-LLAMA_SERVER_EXE=C:\path\to\llama-server.exe
-QWEN_GGUF_MODEL=C:\path\to\qwen3.6-27b-q4_k_m.gguf
-SDXL_MODEL_PATH=C:\path\to\model.safetensors
-```
+除了 `LLAMA_EXTRA_ARGS` 之外都需要填写。
 
 ### 3. 运行
 
@@ -189,7 +183,7 @@ python app.py --serve-only
 
 - 支持格式：PNG、JPG、JPEG、WebP、GIF
 - 上传后会显示预览，可以点击 `✕` 移除
-- 提交时图片会和文本一起发送
+- 提交时图片会和文本一起发送，文本中必须明说当前这段故事只能有图中角色一人
 - 需要在 `.env` 中配置 `LLAMA_MMPROJ_MODEL` 才能解析图片内容
 - 上传图片的这一轮只生成背景图，不生成角色图
 - 如果 LLM 输出了角色 ID，上传图片会自动绑定为该角色的立绘
@@ -274,6 +268,7 @@ python app.py --serve-only
 | `QWEN_EDIT_LLM_PATH` | `""` | LLM 路径 |
 | `QWEN_EDIT_VAE_PATH` | `""` | VAE 路径 |
 | `QWEN_EDIT_CLIP_VISION_PATH` | `""` | CLIP Vision 路径 |
+| `QWEN_EDIT_F2P_LORA_PATH` | `""` | F2P 一致性 LORA 所在目录的路径（只允许放F2P.safetensors一个文件） |
 | `QWEN_EDIT_WIDTH` | `768` | 输出宽度 |
 | `QWEN_EDIT_HEIGHT` | `1024` | 输出高度 |
 | `QWEN_EDIT_CFG_SCALE` | `1` | CFG 强度 |
