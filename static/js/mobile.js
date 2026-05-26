@@ -20,6 +20,11 @@
   var POLL_INTERVAL    = 1000;
   var SCROLL_DEBOUNCE_MS = 150;
 
+  // ── Pending user bubble ────────────────────────────────
+  // Shown immediately after the user hits Send, before the server responds.
+  var pendingBubbleEl = null;
+  var pendingBubbleText = '';
+
   // ── Selected image ─────────────────────────────────────
   var selectedImageFile = null;
 
@@ -117,6 +122,12 @@
     // Render segments
     var segments = data.segments || [];
     if (segments.length === 0 && !data.streaming_segment) {
+      // If there is a pending user bubble, keep it visible and don't wipe the list
+      if (pendingBubbleEl && pendingBubbleEl.parentNode === segmentsList) {
+        emptyHint.style.display = 'none';
+        lastSegmentCount = 0;
+        return;
+      }
       emptyHint.style.display = 'flex';
       segmentsList.innerHTML  = '';
       lastSegmentCount = 0;
@@ -147,8 +158,40 @@
     updateActiveCard(data.current_index || 0);
   }
 
+  // ── Pending user bubble helpers ────────────────────────
+  function showPendingUserBubble(text, hasImage) {
+    removePendingUserBubble();
+    var bubble = document.createElement('div');
+    bubble.className = 'user-bubble user-bubble-pending';
+    bubble.dataset.pending = 'true';
+    var label = text;
+    if (hasImage) label = '📎 ' + label;
+    bubble.textContent = label;
+    segmentsList.appendChild(bubble);
+    pendingBubbleEl   = bubble;
+    pendingBubbleText = text;
+    emptyHint.style.display = 'none';
+    setTimeout(function () {
+      bubble.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  }
+
+  function removePendingUserBubble() {
+    if (pendingBubbleEl && pendingBubbleEl.parentNode) {
+      pendingBubbleEl.parentNode.removeChild(pendingBubbleEl);
+    }
+    pendingBubbleEl   = null;
+    pendingBubbleText = '';
+  }
+
   // ── Segment pair (user bubble + system card) ───────────
   function appendSegmentPair(seg) {
+    // Remove the pending bubble for this message (if it matches)
+    if (pendingBubbleEl && seg.user_text &&
+        seg.user_text.trim() === pendingBubbleText.trim()) {
+      removePendingUserBubble();
+    }
+
     // User message bubble (if user_text is present)
     if (seg.user_text && seg.user_text.trim()) {
       var bubble = document.createElement('div');
@@ -323,12 +366,17 @@
     if (storyState.mode === 'serve-only') return;
 
     var direction = directionInput.value.trim() || '继续故事';
+    var hasImage  = !!selectedImageFile;
+
+    // ── Show user bubble immediately ──────────────────────
+    showPendingUserBubble(direction, hasImage);
+
     setGenerating(true);
     setStatus('正在发送请求...', 'info');
 
     var promise;
 
-    if (selectedImageFile) {
+    if (hasImage) {
       // Multipart upload
       var formData = new FormData();
       formData.append('direction', direction);
@@ -350,6 +398,8 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) {
+          // Request rejected — remove the pending bubble
+          removePendingUserBubble();
           setStatus(data.message || '请求失败', 'error');
           setGenerating(false);
         } else {
@@ -359,6 +409,7 @@
         }
       })
       .catch(function (err) {
+        removePendingUserBubble();
         setStatus('网络错误: ' + err.message, 'error');
         setGenerating(false);
       });

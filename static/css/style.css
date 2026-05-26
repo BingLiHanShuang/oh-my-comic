@@ -208,6 +208,12 @@ html, body {
   to   { opacity: 1; transform: translateX(0); }
 }
 
+/* Pending bubble — slightly dimmed until confirmed by server */
+.user-bubble-pending {
+  opacity: 0.65;
+  font-style: italic;
+}
+
 .segment-card {
   background: var(--bg-card);
   border: 1px solid var(--border);

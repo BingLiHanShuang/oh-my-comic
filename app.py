@@ -90,6 +90,14 @@ QWEN_EDIT_LLM_PATH             = os.getenv("QWEN_EDIT_LLM_PATH",             "/p
 QWEN_EDIT_F2P_LORA_PATH        = os.getenv("QWEN_EDIT_F2P_LORA_PATH",        "/path/to/dir_of_F2P.safetensors")
 QWEN_EDIT_VAE_PATH             = os.getenv("QWEN_EDIT_VAE_PATH",             "/path/to/vae.safetensors")
 QWEN_EDIT_CLIP_VISION_PATH     = os.getenv("QWEN_EDIT_CLIP_VISION_PATH",     "/path/to/clip.gguf")
+QWEN_EDIT_NEGATIVE_PROMPT = os.getenv(
+    "QWEN_EDIT_NEGATIVE_PROMPT",
+    "deformed, mutated, disfigured, poorly drawn hands, poorly drawn face, extra limbs, "
+    "extra fingers, extra arms, extra legs, malformed limbs, fused fingers, too many fingers, "
+    "long neck, missing arms, missing legs, bad anatomy, bad proportions, cloned face, "
+    "gross proportions, text, error, cropped, worst quality, low quality, "
+    "jpeg artifacts, signature, watermark, username, blurry",
+)
 QWEN_EDIT_WIDTH          = int(os.getenv("QWEN_EDIT_WIDTH",          "768"))
 QWEN_EDIT_HEIGHT         = int(os.getenv("QWEN_EDIT_HEIGHT",         "1024"))
 QWEN_EDIT_CFG_SCALE      = float(os.getenv("QWEN_EDIT_CFG_SCALE",    "1"))
@@ -585,12 +593,28 @@ def call_qwen_with_image(image_path: Path, user_text: str, segment_id: int) -> s
     """
     Parse image, combine with user text, then call story generation.
     Returns raw JSON string.
+
+    A one-time constraint is injected into the direction to ensure the LLM
+    only generates a single character (the one in the uploaded image).
+    This constraint is part of USER_DIRECTION and is NOT stored in story
+    history (build_history_text only uses seg["text"]), so it will not
+    pollute future segments.
     """
     image_description = call_qwen_vision_parse(image_path, user_text)
+
+    # One-time single-character constraint — only for this LLM call
+    upload_rule = (
+        "\n\n【本轮上传图片强制规则（仅本轮有效，不影响后续段落）】\n"
+        "1. 本轮 character_prompts 只能包含 1 个角色，即上传图片中的这名角色。\n"
+        "2. 禁止在本轮 character_prompts 中出现已有故事里的其他角色。\n"
+        "3. 如果用户文本中提到其他角色，只能作为背景信息，不得为其生成 character_prompts。\n"
+        "4. 本轮上传图片将被绑定为 character_prompts[0].id 对应的角色立绘。"
+    )
 
     combined_direction = (
         f"{user_text}\n\n"
         f"【用户上传图片的内容描述】\n{image_description}"
+        f"{upload_rule}"
     )
     return call_qwen(combined_direction, segment_id)
 
@@ -639,7 +663,9 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
     raw_chars = data.get("character_prompts", [])
     if not isinstance(raw_chars, list):
         raw_chars = []
-    raw_chars = raw_chars[:2]
+    # Image-upload rounds must only bind one character; enforce here as a
+    # backend safety net even if the LLM ignores the prompt constraint.
+    raw_chars = raw_chars[:1] if skip_character_generation else raw_chars[:2]
 
     character_prompts = []
     character_images  = []
@@ -928,6 +954,23 @@ def _unload_qwen_edit():
     log.info("Qwen Edit model unloaded")
 
 
+def build_qwen_edit_prompt(task_prompt: str) -> str:
+    """
+    Build an edit-style prompt for Qwen Edit (img2img consistency).
+
+    Instead of re-describing the character from scratch (which risks
+    redrawing them as a different person), we instruct the model to
+    KEEP the reference image's identity and only adjust pose/expression.
+    """
+    return (
+        "<lora:F2P:1>, "
+        "保持参考图中的人物身份、脸型、发型、发色、瞳色、服装主体、配饰和整体角色设计不变；"
+        "不要重绘成新角色；"
+        "只根据以下英文标签调整姿势、表情、镜头视角和动作："
+        f"{task_prompt}"
+    )
+
+
 def run_qwen_edit_queue(tasks: List[ImageTask]):
     if not tasks:
         return
@@ -939,7 +982,9 @@ def run_qwen_edit_queue(tasks: List[ImageTask]):
         )
         try:
             output = sd.generate_image(
-                prompt="<lora:F2P:1>, " + task.prompt, ref_images=str(task.ref_path),
+                prompt=build_qwen_edit_prompt(task.prompt), 
+                negative_prompt=QWEN_EDIT_NEGATIVE_PROMPT,
+                ref_images=str(task.ref_path),
                 cfg_scale=QWEN_EDIT_CFG_SCALE, sample_steps=QWEN_EDIT_SAMPLE_STEPS,
                 sample_method=QWEN_EDIT_SAMPLE_METHOD, scheduler=QWEN_EDIT_SCHEDULER,
                 width=task.width, height=task.height, seed=QWEN_EDIT_SEED,
