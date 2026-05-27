@@ -1,6 +1,6 @@
 # oh-my-comic WebUI
 
-一个基于本地部署的 LLM（llama-server）、SDXL 和 Qwen Edit 画图模型运行的自由创作互动连环画系统。
+一个基于本地部署的 LLM（llama-server）、SDXL / ZImage 和 Qwen Edit 画图模型运行的自由创作互动连环画系统。
 
 - **手机端（5001 端口）**：展示故事文本和用户消息，输入下一段剧情方向，支持上传图片，支持创作模式开关
 - **电脑端（5002 端口）**：全屏背景图随剧情切换，连环画展示角色立绘，手机滚动自动同步
@@ -13,10 +13,10 @@
 
 ```
 用户输入方向
-→ LLM 生成故事 JSON（文本 + 角色 prompt + 背景 prompt）
+→ LLM 生成故事 JSON（文本 + 角色 prompt + edit_prompt + 背景 prompt）
 → 关闭 LLM，释放显存
-→ SDXL 生成背景图和角色图（最多 SDXL_MAX_BATCH_SIZE 张/批）
-→ Qwen Edit 生成重复角色图（hybrid 模式，串行）
+→ 新角色：SDXL 或 ZImage 文生图（SDXL 最多 SDXL_MAX_BATCH_SIZE 张/批；ZImage 串行）
+→ 已有角色：Qwen Edit 图生图（sdxl_hybrid / zimage_hybrid 模式，串行）
 → 生图完成后重新预热 LLM
 ```
 
@@ -51,28 +51,30 @@
 
 ```
 oh-my-comic/
-├── app.py                        # 主程序
-├── requirements.txt              # Python 依赖
-├── .env.example                  # 配置模板（复制为 .env 后填写）
+├── app.py                              # 主程序
+├── requirements.txt                    # Python 依赖
+├── .env.example                        # 配置模板（复制为 .env 后填写）
 ├── README.md
-├── qwen_example.py               # LLM / SDXL / Qwen Edit 调用示例
+├── qwen_example.py                     # LLM / SDXL / Qwen Edit 调用示例
+├── zimage_example.py                   # ZImage 调用示例
 ├── data/
-│   ├── story.json                # 故事数据（运行时自动生成）
-│   ├── raw_llm_response.txt      # LLM 原始输出（调试用）
-│   ├── last_error.txt            # 最近一次错误详情（调试用）
-│   └── uploads/                  # 用户上传的图片（运行时自动创建）
+│   ├── story.json                      # 故事数据（运行时自动生成）
+│   ├── raw_llm_response.txt            # LLM 原始输出（调试用）
+│   ├── last_error.txt                  # 最近一次错误详情（调试用）
+│   └── uploads/                        # 用户上传的图片（运行时自动创建）
 ├── static/
 │   ├── css/style.css
 │   ├── js/
 │   │   ├── mobile.js
 │   │   └── desktop.js
-│   └── generated/                # 生成的图片（运行时自动创建）
+│   └── generated/                      # 生成的图片（运行时自动创建）
 ├── templates/
-│   ├── mobile.html               # 手机端页面
-│   └── desktop.html              # 电脑端页面
+│   ├── mobile.html                     # 手机端页面
+│   └── desktop.html                    # 电脑端页面
 └── prompts/
-    ├── story_system_prompt.txt   # 系统 prompt（可自定义）
-    └── story_user_template.txt   # 用户 prompt 模板（可自定义）
+    ├── story_system_prompt.txt         # 系统 prompt（可自定义）
+    ├── story_user_template.txt         # SDXL / sdxl_hybrid 用 prompt 模板
+    └── story_user_template_zimage.txt  # ZImage / zimage_hybrid 用 prompt 模板
 ```
 
 ---
@@ -214,11 +216,41 @@ python app.py --serve-only
 编辑 `prompts/` 目录下的文件：
 
 - `story_system_prompt.txt`：系统角色设定
-- `story_user_template.txt`：用户 prompt 模板，支持以下占位符：
-  - `{{HISTORY}}`：最近 N 段故事历史（N 由 `STORY_CONTEXT_SEGMENTS` 控制）
-  - `{{USER_DIRECTION}}`：用户输入的剧情方向
-  - `{{SEGMENT_ID}}`：当前段落编号
-  - `{{PROMPT_RATING}}`：图片 rating tag（由 `.env` 中 `PROMPT_RATING` 控制）
+- `story_user_template.txt`：SDXL / sdxl_hybrid 模式用 prompt 模板（英文 Danbooru tag-style）
+- `story_user_template_zimage.txt`：ZImage / zimage_hybrid 模式用 prompt 模板（中文自然语言现实画风）
+
+两个模板都支持以下占位符：
+
+| 占位符 | 说明 |
+|--------|------|
+| `{{CHARACTER_PROFILES}}` | 已有角色视觉档案（id + first_prompt），帮助 LLM 写 edit_prompt |
+| `{{HISTORY}}` | 最近 N 段故事历史（N 由 `STORY_CONTEXT_SEGMENTS` 控制） |
+| `{{USER_DIRECTION}}` | 用户输入的剧情方向 |
+| `{{SEGMENT_ID}}` | 当前段落编号 |
+| `{{PROMPT_RATING}}` | 图片 rating tag（由 `.env` 中 `PROMPT_RATING` 控制） |
+
+### LLM 输出 JSON 格式
+
+```json
+{
+  "text": "故事正文",
+  "character_prompts": [
+    {
+      "id": "角色英文唯一id",
+      "prompt": "文生图提示词（新角色首次生成用）",
+      "edit_prompt": "图生图编辑指令（Qwen Edit 已有角色用）"
+    }
+  ],
+  "background_prompt": {
+    "id": "场景英文唯一id",
+    "prompt": "背景文生图提示词"
+  }
+}
+```
+
+- `prompt`：给 SDXL 或 ZImage 首次生成角色图用
+- `edit_prompt`：给 Qwen Edit 图生图用，格式为"改变什么，什么保持不变"
+- 后端根据角色是否已有参考图自动选择使用哪个字段
 
 ---
 
@@ -285,11 +317,27 @@ python app.py --serve-only
 | `QWEN_EDIT_SCHEDULER` | `simple` | 调度器 |
 | `QWEN_EDIT_SEED` | `-1` | 随机种子（-1 随机） |
 
+### ZImage
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ZIMAGE_MODEL_PATH` | `""` | ZImage 模型目录路径（如 Z-Image-Turbo） |
+| `ZIMAGE_DTYPE` | `bfloat16` | 精度 |
+| `ZIMAGE_STEPS` | `9` | 生成步数（Turbo 模型推荐 9） |
+| `ZIMAGE_GUIDANCE_SCALE` | `0.0` | CFG 强度（Turbo 模型必须为 0.0） |
+| `ZIMAGE_ATTENTION_BACKEND` | `flash` | 注意力后端（`flash` / `_flash_3`） |
+| `ZIMAGE_NEGATIVE_PROMPT` | （内置） | 负面提示词（现实画风） |
+
+> ZImage 使用 SDXL 的分辨率配置（`SDXL_CHARACTER_WIDTH/HEIGHT`、`SDXL_BACKGROUND_WIDTH/HEIGHT`）。
+
+| `ZIMAGE_ENABLE_CPU_OFFLOAD` | `true` | 是否启用 CPU offload（`true`/`false`） |
+| `ZIMAGE_RUN_MODE` | `subprocess` | `subprocess`（推荐）：ZImage 在子进程中运行，完成后 OS 回收全部内存；`inprocess`：在主进程中运行，可能残留 CPU RAM |
+
 ### 图片生成模式
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `IMAGE_GENERATION_MODE` | `sdxl_only` | `sdxl_only`：全部用 SDXL；`hybrid`：首次角色 SDXL，重复角色 Qwen Edit |
+| `IMAGE_GENERATION_MODE` | `sdxl_only` | `sdxl_only`：全部用 SDXL；`sdxl_hybrid`：SDXL + Qwen Edit；`zimage_hybrid`：ZImage + Qwen Edit |
 
 ### 故事生成
 
@@ -314,13 +362,22 @@ python app.py --serve-only
 {
   "title": "oh-my-comic",
   "current_index": 2,
+  "character_profiles": {
+    "amiya": {
+      "id": "amiya",
+      "first_prompt": "1girl, full_body, amiya, general, ...",
+      "first_segment_id": 0,
+      "engine": "sdxl",
+      "source": "generated"
+    }
+  },
   "segments": [
     {
       "id": 0,
       "user_text": "用户输入的剧情方向",
       "text": "故事正文...",
       "character_prompts": [
-        { "id": "amiya", "prompt": "1girl, full_body, ..." }
+        { "id": "amiya", "prompt": "1girl, full_body, ...", "edit_prompt": "将图中角色改为..." }
       ],
       "background_prompt": {
         "id": "forest", "prompt": "general, forest, ..."
@@ -380,6 +437,40 @@ A: 需要等待 Qwen 语言模型预热完成（状态栏显示"Qwen 语言模�
 **Q: 上传图片后，该角色后续会保持一致性吗？**
 
 A: 会。上传图片绑定的角色 id 会被加入 `force_qwen_edit_character_ids` 列表，保存在 `data/story.json` 中。即使 `IMAGE_GENERATION_MODE=sdxl_only`，该角色后续出现时也会强制使用 Qwen Edit 进行图生图，保持外观一致。其他角色仍然遵循 `IMAGE_GENERATION_MODE` 设置。
+
+**Q: ZImage 生成完后 CPU 内存没有释放，导致 Qwen Edit 变慢怎么办？**
+
+A: 这是 ZImagePipeline + accelerate offload + flash attention 在长驻进程中的已知问题。进程内 `del pipe / gc.collect()` 无法完全归还 CPU RAM 给操作系统。
+
+解决方案：在 `.env` 中设置：
+```env
+ZIMAGE_RUN_MODE=subprocess
+```
+这是默认值。ZImage 会在独立子进程中运行，子进程退出后 OS 强制回收全部内存，Qwen Edit 不会受到影响。
+
+如果需要调试，可以临时改为：
+```env
+ZIMAGE_RUN_MODE=inprocess
+```
+
+**Q: ZImage 的 PROMPT_RATING 是怎么工作的？**
+
+A: ZImage 使用中文自然语言 prompt，不能直接把 `general`/`sensitive` 等英文词塞进 prompt。
+
+`story_user_template_zimage.txt` 中的 `{{PROMPT_RATING}}` 会被替换为实际值，然后 LLM 会根据该等级调整：
+- `text` 故事正文的描写尺度
+- `character_prompts[].prompt` 的视觉描述尺度
+- `character_prompts[].edit_prompt` 的动作/姿态尺度
+- `background_prompt.prompt` 的氛围描述尺度
+
+LLM 不会把 rating 英文词直接写进 prompt，而是转化为符合该等级的中文自然语言描述。
+
+**Q: 三种图像模式有什么区别？**
+
+A:
+- `sdxl_only`：全部用 SDXL 文生图，适合二次元画风。Qwen Edit 只在上传图片绑定角色时使用。
+- `sdxl_hybrid`：新角色用 SDXL 文生图，重复角色用 Qwen Edit 图生图保持一致性，适合二次元画风。
+- `zimage_hybrid`：新角色用 ZImage 文生图，重复角色用 Qwen Edit 图生图保持一致性，适合现实/写实画风。ZImage 使用中文自然语言 prompt，串行生成（不支持批量）。
 
 **Q: 如何只用 SDXL 不用 Qwen Edit**
 
