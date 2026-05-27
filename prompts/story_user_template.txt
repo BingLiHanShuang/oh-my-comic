@@ -1,5 +1,8 @@
 你正在续写一个互动连环画故事。
 
+【已有角色视觉档案】
+{{CHARACTER_PROFILES}}
+
 【已有故事历史】
 {{HISTORY}}
 
@@ -15,23 +18,53 @@ JSON 格式必须是：
   "character_prompts": [
     {
       "id": "deer",
-      "prompt": "English prompt for vertical character image"
+      "prompt": "English text-to-image prompt for vertical character image",
+      "edit_prompt": "中文图生图编辑指令，用于 Qwen Edit 图像编辑"
     }
   ],
   "background_prompt": {
     "id": "river",
-    "prompt": "English prompt for horizontal background image"
+    "prompt": "English text-to-image prompt for horizontal background image"
   }
 }
 
 要求：
-0. prompt中必须有 {{PROMPT_RATING}} 。
+0. prompt 中必须有 {{PROMPT_RATING}}。
 1. character_prompts 最多 2 个，可以为空数组 []。
 2. character_prompts 的 id 使用角色英文名，例如 deer、robot、cat。
 3. 同一角色在后续段落中必须复用完全相同的 id。
 4. background_prompt 的 id 使用地点或场景英文名，例如 river、library、cabin。
 5. background_prompt 可以为 null。
-6. character_prompts 中的 prompt 规则：必须是单人立绘，需要特写的立绘必须使用 closeup 提示词，其他立绘都属于全身立绘，提示词必须包含 full_body。提示词控制在 300 个英文字母以内。使用 () 提升权重，使用 [] 降低权重。提示词中禁止出现图片尺寸、图像质量。prompt 应包括如下要素：person count（1 girl、1 boy、1 other 等）、character name、{{PROMPT_RATING}}、人物表情、外貌具体特征细节（shiny_skin、tall、long_legs 等）、镜头视角（front view、back view、side view、top view 等）、人物动作（sitting、squatting、hands on chest、hands on waist、hands on hips、claw hands、hands in heart shape 等）。以下示例只用于说明 prompt 格式和 tag 密度，不要照抄其中的发色、服装、饰品或角色特征。示例：1girl, full_body, {{PROMPT_RATING}}, smile, short hair, brown hair, long sleeves, hair ornament, red eyes, navel, closed mouth, jewelry, jacket, earrings, frills, open clothes, choker, belt, midriff, off shoulder, necklace, black jacket, hands up, fur trim, (front view:1.2), feathers, red shirt, lace trim
-7. background_prompt 中的 prompt 规则：提示词控制在 300 个英文字母以内。使用 () 提升权重，使用 [] 降低权重。提示词中禁止出现图片尺寸、禁止出现角色人物。提示词必须包括如下要素：{{PROMPT_RATING}}、场景具体特征（用多个词详细描述）。
+6. 每个 character_prompts 项必须同时包含 id、prompt、edit_prompt 三个字段。
+
+【判断角色是否已有】
+- 如果角色 id 出现在【已有角色视觉档案】中，则为已有角色。
+- 如果角色 id 未出现在【已有角色视觉档案】中，则为新角色。
+
+【新角色的 prompt 规则】
+必须完整描述角色外貌、服装、表情、姿势和风格，用于首次生成角色图。
+必须是单人立绘，需要特写的立绘必须使用 closeup 提示词，其他立绘都属于全身立绘，提示词必须包含 full_body。
+使用英文 Danbooru/tag-style，用英文逗号分隔，控制在 300 个英文字母以内。
+使用 () 提升权重，使用 [] 降低权重，禁止出现图片尺寸、禁止出现图像质量相关提示词。
+prompt 应包括如下要素：person count（1 girl、1 boy、1 other 等）、character name、{{PROMPT_RATING}}、人物表情、外貌具体特征细节（shiny_skin、tall、long_legs 等）、镜头视角（front view、back view、side view、top view 等）、人物动作（sitting、squatting、hands on chest、hands on waist、hands on hips、claw hands、hands in heart shape 等）。
+以下示例只用于说明 prompt 格式和 tag 密度，不要照抄其中的发色、服装、饰品或角色特征。示例：1girl, full_body, {{PROMPT_RATING}}, smile, short hair, brown hair, long sleeves, hair ornament, red eyes, navel, closed mouth, jewelry, jacket, earrings, frills, open clothes, choker, belt, midriff, off shoulder, necklace, black jacket, hands up, fur trim, (front view:1.2), feathers, red shirt, lace trim
+
+【新角色的 edit_prompt 规则】
+描述本轮角色的动作、姿势、表情，并写明保持该角色整体设计不变，作为未来图生图备用。
+使用中文，写清改变什么、什么保持不变。
+示例：将图中角色调整为站立姿势，右手举起小型终端照明，表情变得谨慎坚定，保持人物身份、脸型、发型、发色、瞳色、服装主体、配饰和整体角色设计不变。
+
+【已有角色的 prompt 规则】
+必须保持【已有角色视觉档案】中 first_prompt 的视觉设定一致，不得改变角色外貌、发型、发色、瞳色、服装主体和配饰。
+其余格式要求与新角色 prompt 相同。
+
+【已有角色的 edit_prompt 规则】
+必须基于参考图写 Qwen Edit 编辑指令，不得重新描述完整外貌。
+使用中文，写清改变什么、什么保持不变。
+写清动作 + 目标 + 约束，目标要具体到身体部位、服装部位或对象。
+复杂目标拆成多步。如果涉及材质替换，写明材质类型与光照条件。
+示例：将图中角色改为双手抱胸站立，身体略微侧向镜头，表情变为自信微笑，保持人物身份、脸型、发型、发色、瞳色、服装主体、配饰和整体角色设计不变。
+
+7. background_prompt 中的 prompt 规则：使用英文 Danbooru/tag-style，控制在 300 个英文字母以内。使用 () 提升权重，使用 [] 降低权重。提示词中禁止出现图片尺寸、禁止出现角色人物。提示词必须包括如下要素：{{PROMPT_RATING}}、场景具体特征（用多个词详细描述）。
 8. 不要输出其他字段。
 9. text 字段的故事正文控制在 400 到 600 个中文字之间。
