@@ -28,10 +28,29 @@
     <div id="segments-list" class="segments-list">
       <!-- Segments injected by JS -->
     </div>
+
+    <!-- Empty state: starter entry + normal hint -->
     <div id="empty-hint" class="empty-hint">
-      <div class="empty-icon">📖</div>
-      <p></p>
-      <p></p>
+      <!-- Quick Start entry card — shown when story is empty -->
+      <div id="starter-entry" class="starter-entry" onclick="openStarterWizard()">
+        <div class="starter-entry-icon">✨</div>
+        <div class="starter-entry-title" id="starter-entry-title"></div>
+        <div class="starter-entry-subtitle" id="starter-entry-subtitle"></div>
+      </div>
+
+      <!-- Starter wizard panel — shown after clicking the entry -->
+      <div id="starter-panel" class="starter-panel hidden">
+        <div id="starter-questions-container" class="starter-questions-container"></div>
+        <button id="starter-submit-btn" class="starter-submit-btn" onclick="submitStarterAnswers()" disabled></button>
+        <button class="starter-cancel-btn" onclick="closeStarterWizard()">✕</button>
+      </div>
+
+      <!-- Normal empty hint text -->
+      <div id="empty-text-hint" class="empty-text-hint">
+        <div class="empty-icon">📖</div>
+        <p id="empty-p1"></p>
+        <p id="empty-p2"></p>
+      </div>
     </div>
   </main>
 
