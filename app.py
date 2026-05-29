@@ -2,25 +2,20 @@
 """
 oh-my-comic WebUI
 - Port 5001 (mobile): Story text + direction input + creative mode + image upload
-- Port 5002 (desktop): Background + character comic strip
+- Port 5002 (desktop): Background + character comic strip + regen buttons + keyboard nav
 
 Image generation pipeline (controlled by IMAGE_GENERATION_MODE):
-  sdxl_only    → SDXL for all images; Qwen Edit only for uploaded-image-bound characters
-  sdxl_hybrid  → SDXL for new characters/backgrounds; Qwen Edit for recurring characters
-  zimage_hybrid→ ZImage for new characters/backgrounds; Qwen Edit for recurring characters
+  sdxl_only    -> SDXL for all images; Qwen Edit only for uploaded-image-bound characters
+  sdxl_hybrid  -> SDXL for new characters/backgrounds; Qwen Edit for recurring characters
+  zimage_hybrid-> ZImage for new characters/backgrounds; Qwen Edit for recurring characters
 
 LLM: llama-server auto-managed (start/stop/prewarm)
 Frontend: pure fetch polling, no Socket.IO dependency
 
-Creative mode:
-  ON  → llama-server stays running; user writes multiple segments; no images generated
-  OFF → llama-server stops; all pending images generated in batch; llama pre-warmed again
-
-Image upload:
-  User attaches 1 image + text → llama-server (multimodal) parses image
-  → combined input generates story JSON → only background image generated
-  → uploaded image saved as character portrait for character_prompts[0].id
-  → that character is registered for forced Qwen Edit in future segments
+Regen queue:
+  Desktop UI shows a regen button on each image.
+  Clicks within REGEN_DEBOUNCE_MS are merged into one batch.
+  source="uploaded" images are protected and cannot be regenerated.
 """
 
 import os
@@ -36,7 +31,7 @@ import subprocess
 import base64
 import shutil
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 
@@ -64,30 +59,29 @@ LLAMA_FLASH_ATTN         = os.getenv("LLAMA_FLASH_ATTN",   "on")
 LLAMA_MMPROJ_MODEL       = os.getenv("LLAMA_MMPROJ_MODEL", "")
 LLAMA_EXTRA_ARGS         = os.getenv("LLAMA_EXTRA_ARGS",   "")
 
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", f"http://{os.getenv('LLAMA_HOST','127.0.0.1')}:{os.getenv('LLAMA_PORT','8080')}/v1")
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY",  "llama-cpp-local")
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL",    "qwen3.6-35b")
-PROMPT_RATING   = os.getenv("PROMPT_RATING",   "general")
+OPENAI_BASE_URL = os.getenv(
+    "OPENAI_BASE_URL",
+    f"http://{os.getenv('LLAMA_HOST','127.0.0.1')}:{os.getenv('LLAMA_PORT','8080')}/v1",
+)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "llama-cpp-local")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL",   "qwen3.6-35b")
+PROMPT_RATING  = os.getenv("PROMPT_RATING",  "general")
 
 # ─── Image Generation Mode ────────────────────────────────────────────────────
-# sdxl_only    = SDXL for everything; Qwen Edit only for uploaded-image-bound chars
-# sdxl_hybrid  = SDXL for new chars/bg; Qwen Edit for recurring chars
-# zimage_hybrid= ZImage for new chars/bg; Qwen Edit for recurring chars
 _img_mode_raw = os.getenv("IMAGE_GENERATION_MODE", "sdxl_only").lower().strip()
 if _img_mode_raw not in ("sdxl_only", "sdxl_hybrid", "zimage_hybrid"):
-    # Legacy fallback
     if os.getenv("SD_ENABLE_CHARACTER_IMG2IMG", "false").lower() == "true":
         _img_mode_raw = "sdxl_hybrid"
     else:
         _img_mode_raw = "sdxl_only"
 
-IMAGE_GENERATION_MODE        = _img_mode_raw
-BASE_IMAGE_ENGINE            = "zimage" if _img_mode_raw == "zimage_hybrid" else "sdxl"
-USE_QWEN_EDIT_FOR_RECURRING  = _img_mode_raw in ("sdxl_hybrid", "zimage_hybrid")
+IMAGE_GENERATION_MODE       = _img_mode_raw
+BASE_IMAGE_ENGINE           = "zimage" if _img_mode_raw == "zimage_hybrid" else "sdxl"
+USE_QWEN_EDIT_FOR_RECURRING = _img_mode_raw in ("sdxl_hybrid", "zimage_hybrid")
 
 # ─── SDXL Configuration ───────────────────────────────────────────────────────
-SDXL_MODEL_PATH      = os.getenv("SDXL_MODEL_PATH",      "/path/to/model.safetensors")
-SDXL_DTYPE           = os.getenv("SDXL_DTYPE",           "bfloat16")
+SDXL_MODEL_PATH      = os.getenv("SDXL_MODEL_PATH",     "/path/to/model.safetensors")
+SDXL_DTYPE           = os.getenv("SDXL_DTYPE",          "bfloat16")
 SDXL_MAX_BATCH_SIZE  = int(os.getenv("SDXL_MAX_BATCH_SIZE",  "4"))
 SDXL_STEPS           = int(os.getenv("SDXL_STEPS",           "30"))
 SDXL_GUIDANCE_SCALE  = float(os.getenv("SDXL_GUIDANCE_SCALE","6.0"))
@@ -98,27 +92,24 @@ SDXL_NEGATIVE_PROMPT = os.getenv(
     "monochrome, greyscale, twitter username, jpeg artifacts, 2koma, 4koma, "
     "extra digits, fewer digits, jaggy lines, unclear, signature",
 )
-# Shared resolution for both SDXL and ZImage
 SDXL_CHARACTER_WIDTH   = int(os.getenv("SDXL_CHARACTER_WIDTH",   "768"))
 SDXL_CHARACTER_HEIGHT  = int(os.getenv("SDXL_CHARACTER_HEIGHT",  "1024"))
 SDXL_BACKGROUND_WIDTH  = int(os.getenv("SDXL_BACKGROUND_WIDTH",  "1280"))
 SDXL_BACKGROUND_HEIGHT = int(os.getenv("SDXL_BACKGROUND_HEIGHT", "720"))
 
 # ─── ZImage Configuration ─────────────────────────────────────────────────────
-ZIMAGE_MODEL_PATH          = os.getenv("ZIMAGE_MODEL_PATH",          "/path/to/Z-Image-Turbo")
-ZIMAGE_DTYPE               = os.getenv("ZIMAGE_DTYPE",               "bfloat16")
-ZIMAGE_STEPS               = int(os.getenv("ZIMAGE_STEPS",           "9"))
-ZIMAGE_GUIDANCE_SCALE      = float(os.getenv("ZIMAGE_GUIDANCE_SCALE","0.0"))
-ZIMAGE_ATTENTION_BACKEND   = os.getenv("ZIMAGE_ATTENTION_BACKEND",   "flash")
-ZIMAGE_ENABLE_CPU_OFFLOAD  = os.getenv("ZIMAGE_ENABLE_CPU_OFFLOAD",  "true").lower() == "true"
-ZIMAGE_NEGATIVE_PROMPT     = os.getenv(
+ZIMAGE_MODEL_PATH         = os.getenv("ZIMAGE_MODEL_PATH",         "/path/to/Z-Image-Turbo")
+ZIMAGE_DTYPE              = os.getenv("ZIMAGE_DTYPE",              "bfloat16")
+ZIMAGE_STEPS              = int(os.getenv("ZIMAGE_STEPS",          "9"))
+ZIMAGE_GUIDANCE_SCALE     = float(os.getenv("ZIMAGE_GUIDANCE_SCALE","0.0"))
+ZIMAGE_ATTENTION_BACKEND  = os.getenv("ZIMAGE_ATTENTION_BACKEND",  "flash")
+ZIMAGE_ENABLE_CPU_OFFLOAD = os.getenv("ZIMAGE_ENABLE_CPU_OFFLOAD", "true").lower() == "true"
+ZIMAGE_NEGATIVE_PROMPT    = os.getenv(
     "ZIMAGE_NEGATIVE_PROMPT",
     "extra limbs, extra fingers, extra arms, extra legs, blurry skin texture, "
     "plastic skin, waxy face, oversaturated colors, flat lighting, low contrast, "
     "dull skin tone",
 )
-# subprocess = ZImage runs in a child process; child exits → OS reclaims all RAM (recommended)
-# inprocess  = ZImage runs in the same process as app.py (may leave CPU RAM residue)
 ZIMAGE_RUN_MODE = os.getenv("ZIMAGE_RUN_MODE", "subprocess").lower().strip()
 if ZIMAGE_RUN_MODE not in ("subprocess", "inprocess"):
     ZIMAGE_RUN_MODE = "subprocess"
@@ -137,17 +128,55 @@ QWEN_EDIT_NEGATIVE_PROMPT = os.getenv(
     "gross proportions, text, error, cropped, worst quality, low quality, "
     "jpeg artifacts, signature, watermark, username, blurry",
 )
-QWEN_EDIT_WIDTH          = int(os.getenv("QWEN_EDIT_WIDTH",          "768"))
-QWEN_EDIT_HEIGHT         = int(os.getenv("QWEN_EDIT_HEIGHT",         "1024"))
-QWEN_EDIT_CFG_SCALE      = float(os.getenv("QWEN_EDIT_CFG_SCALE",    "1"))
-QWEN_EDIT_SAMPLE_STEPS   = int(os.getenv("QWEN_EDIT_SAMPLE_STEPS",   "8"))
-QWEN_EDIT_SAMPLE_METHOD  = os.getenv("QWEN_EDIT_SAMPLE_METHOD",  "euler_a")
-QWEN_EDIT_SCHEDULER      = os.getenv("QWEN_EDIT_SCHEDULER",      "simple")
-QWEN_EDIT_SEED           = int(os.getenv("QWEN_EDIT_SEED",        "-1"))
+QWEN_EDIT_WIDTH        = int(os.getenv("QWEN_EDIT_WIDTH",        "768"))
+QWEN_EDIT_HEIGHT       = int(os.getenv("QWEN_EDIT_HEIGHT",       "1024"))
+QWEN_EDIT_CFG_SCALE    = float(os.getenv("QWEN_EDIT_CFG_SCALE",  "1"))
+QWEN_EDIT_SAMPLE_STEPS = int(os.getenv("QWEN_EDIT_SAMPLE_STEPS", "8"))
+QWEN_EDIT_SAMPLE_METHOD = os.getenv("QWEN_EDIT_SAMPLE_METHOD", "euler_a")
+QWEN_EDIT_SCHEDULER    = os.getenv("QWEN_EDIT_SCHEDULER",    "simple")
+QWEN_EDIT_SEED         = int(os.getenv("QWEN_EDIT_SEED",     "-1"))
 
-STORY_CONTEXT_SEGMENTS = int(os.getenv("STORY_CONTEXT_SEGMENTS", "6"))
+# Reference image policy for Qwen Edit.
+# latest = use the most recent successful character image (recommended)
+# first  = always use the first successful character image
+# 最近参考图策略（推荐）或首次参考图策略。
+QWEN_EDIT_REFERENCE_POLICY = os.getenv("QWEN_EDIT_REFERENCE_POLICY", "latest").lower().strip()
+if QWEN_EDIT_REFERENCE_POLICY not in ("latest", "first"):
+    QWEN_EDIT_REFERENCE_POLICY = "latest"
+
+# Fall back to SDXL text-to-image when Qwen Edit fails.
+# Qwen Edit 失败后自动用 SDXL 文生图补充。
+QWEN_EDIT_FALLBACK_TO_SDXL = os.getenv("QWEN_EDIT_FALLBACK_TO_SDXL", "true").lower() == "true"
+
+# ─── Story Context ────────────────────────────────────────────────────────────
+# LLAMA_CTX_SIZE: maximum context window for llama-server (tokens).
+# STORY_CONTEXT_SEGMENTS: how many recent story segments to inject per LLM prompt.
+# 128K context does not mean every request uses 128K; actual usage is controlled by
+# STORY_CONTEXT_SEGMENTS. Recommended: 24 for most use cases.
+STORY_CONTEXT_SEGMENTS = int(os.getenv("STORY_CONTEXT_SEGMENTS", "24"))
 MOBILE_PORT  = int(os.getenv("MOBILE_PORT",  "5001"))
 DESKTOP_PORT = int(os.getenv("DESKTOP_PORT", "5002"))
+
+# ─── Language & Feature Flags ─────────────────────────────────────────────────
+UI_LANGUAGE    = os.getenv("UI_LANGUAGE",    "zh-CN").strip()
+STORY_LANGUAGE = os.getenv("STORY_LANGUAGE", UI_LANGUAGE).strip()
+ENABLE_BACKGROUND_GENERATION = os.getenv("ENABLE_BACKGROUND_GENERATION", "true").lower() == "true"
+
+# ─── Story Backup ─────────────────────────────────────────────────────────────
+# Atomic write + timestamped backup for story.json.
+STORY_BACKUP_ENABLED = os.getenv("STORY_BACKUP_ENABLED", "true").lower() == "true"
+STORY_BACKUP_KEEP    = int(os.getenv("STORY_BACKUP_KEEP", "20"))
+
+# ─── LLM JSON Repair ──────────────────────────────────────────────────────────
+# When the LLM returns malformed JSON, send it back for repair before giving up.
+# Does NOT affect normal successful JSON output — only triggered on parse failure.
+ENABLE_LLM_JSON_REPAIR    = os.getenv("ENABLE_LLM_JSON_REPAIR",    "true").lower() == "true"
+LLM_JSON_REPAIR_MAX_CHARS = int(os.getenv("LLM_JSON_REPAIR_MAX_CHARS", "24000"))
+
+# ─── Regen Queue ──────────────────────────────────────────────────────────────
+# Debounce window for image regeneration requests (milliseconds).
+# Clicks within this window are merged into one batch to avoid reloading models.
+REGEN_DEBOUNCE_MS = int(os.getenv("REGEN_DEBOUNCE_MS", "3000"))
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 BASE_DIR      = Path(__file__).parent
@@ -156,14 +185,18 @@ STATIC_DIR    = BASE_DIR / "static"
 GENERATED_DIR = STATIC_DIR / "generated"
 PROMPTS_DIR   = BASE_DIR / "prompts"
 UPLOADS_DIR   = DATA_DIR / "uploads"
+BACKUPS_DIR   = DATA_DIR / "backups"
 
 DATA_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
 
-STORY_FILE      = DATA_DIR / "story.json"
-RAW_LLM_FILE    = DATA_DIR / "raw_llm_response.txt"
-LAST_ERROR_FILE = DATA_DIR / "last_error.txt"
+STORY_FILE           = DATA_DIR / "story.json"
+RAW_LLM_FILE         = DATA_DIR / "raw_llm_response.txt"
+RAW_LLM_REPAIR_INPUT = DATA_DIR / "raw_llm_repair_input.txt"
+RAW_LLM_REPAIRED     = DATA_DIR / "raw_llm_repaired.txt"
+LAST_ERROR_FILE      = DATA_DIR / "last_error.txt"
+PERF_LOG_FILE        = DATA_DIR / "perf_log.jsonl"
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -190,21 +223,24 @@ story_state = {
     "segments": [],
     "mode": "generate",
     "streaming_segment": None,
-    # Character IDs whose images were bound from user uploads.
-    # These always use Qwen Edit for consistency, regardless of IMAGE_GENERATION_MODE.
     "force_qwen_edit_character_ids": [],
-    # Visual profile for each character: first_prompt, engine, source, etc.
-    # Used to inject context into LLM prompts so it can write proper edit_prompts.
     "character_profiles": {},
 }
-state_lock      = threading.Lock()
-generation_lock = threading.Lock()
-_is_generating  = False
-_creative_mode  = False
+state_lock        = threading.Lock()
+generation_lock   = threading.Lock()
+_is_generating    = False
+_creative_mode    = False
 _is_batch_imaging = False
 
 _status_log  = deque(maxlen=50)
 _status_lock = threading.Lock()
+
+# ─── Regen Queue State ────────────────────────────────────────────────────────
+_regen_pending: dict = {}
+_regen_timer: Optional[threading.Timer] = None
+_regen_worker_running: bool = False
+_is_regen_imaging: bool = False
+_regen_lock = threading.Lock()
 
 # ─── Flask Apps ──────────────────────────────────────────────────────────────
 mobile_app = Flask(
@@ -234,6 +270,11 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def tr(zh: str, en: str) -> str:
+    """Return English string when UI_LANGUAGE starts with 'en', otherwise Chinese."""
+    return en if UI_LANGUAGE.lower().startswith("en") else zh
+
+
 def broadcast_status(message, status_type="info"):
     log.info(f"[STATUS] {message}")
     entry = {"message": message, "type": status_type, "timestamp": time.time()}
@@ -243,7 +284,11 @@ def broadcast_status(message, status_type="info"):
 
 def get_latest_status():
     with _status_lock:
-        return _status_log[-1] if _status_log else {"message": "就绪", "type": "info", "timestamp": time.time()}
+        return _status_log[-1] if _status_log else {
+            "message": tr("就绪", "Ready"),
+            "type": "info",
+            "timestamp": time.time(),
+        }
 
 
 def log_error(message):
@@ -253,11 +298,61 @@ def log_error(message):
     except Exception:
         pass
 
+
+def log_perf(event_type: str, duration_sec: float, **details):
+    """Append a performance log entry to data/perf_log.jsonl."""
+    entry = {
+        "ts":           time.strftime("%Y-%m-%d %H:%M:%S"),
+        "type":         event_type,
+        "duration_sec": round(duration_sec, 2),
+    }
+    if details:
+        entry["details"] = details
+    try:
+        with open(PERF_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning(f"perf_log write failed: {e}")
+
 # ─── Story State Management ──────────────────────────────────────────────────
-def save_story():
+def save_story(backup: bool = True):
+    """
+    Atomically write story.json (write to .tmp then os.replace).
+    Optionally create a timestamped backup in data/backups/.
+    """
     with state_lock:
-        with open(STORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(story_state, f, ensure_ascii=False, indent=2)
+        content = json.dumps(story_state, ensure_ascii=False, indent=2)
+
+    tmp_file = STORY_FILE.with_suffix(".json.tmp")
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, STORY_FILE)
+    except Exception as e:
+        log.error(f"save_story failed: {e}")
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+    if backup and STORY_BACKUP_ENABLED:
+        try:
+            BACKUPS_DIR.mkdir(exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            backup_file = BACKUPS_DIR / f"story_{ts}.json"
+            shutil.copy2(STORY_FILE, backup_file)
+            backups = sorted(BACKUPS_DIR.glob("story_*.json"))
+            while len(backups) > STORY_BACKUP_KEEP:
+                try:
+                    backups[0].unlink(missing_ok=True)
+                except Exception:
+                    pass
+                backups = backups[1:]
+        except Exception as e:
+            log.warning(f"story backup failed: {e}")
 
 
 def load_story():
@@ -277,9 +372,12 @@ def get_story_snapshot():
         snap = json.loads(json.dumps(story_state))
     snap["is_generating"]    = _is_generating
     snap["is_batch_imaging"] = _is_batch_imaging
+    snap["is_regen_imaging"] = _is_regen_imaging
     snap["creative_mode"]    = _creative_mode
     snap["llm_ready"]        = _llm_ready
     snap["latest_status"]    = get_latest_status()
+    snap["ui_language"]      = UI_LANGUAGE
+    snap["story_language"]   = STORY_LANGUAGE
     return snap
 
 # ─── Prompt Templates ────────────────────────────────────────────────────────
@@ -334,11 +432,17 @@ def load_prompt_template(filename):
     return None
 
 
+def _select_system_prompt_filename():
+    if STORY_LANGUAGE.lower().startswith("en"):
+        return "story_system_prompt_en.txt"
+    return "story_system_prompt.txt"
+
+
 def _select_user_template_filename():
-    """Choose the right prompt template based on the current image generation mode."""
+    is_en = STORY_LANGUAGE.lower().startswith("en")
     if BASE_IMAGE_ENGINE == "zimage":
-        return "story_user_template_zimage.txt"
-    return "story_user_template.txt"
+        return "story_user_template_zimage_en.txt" if is_en else "story_user_template_zimage.txt"
+    return "story_user_template_en.txt" if is_en else "story_user_template.txt"
 
 
 def build_history_text():
@@ -348,13 +452,16 @@ def build_history_text():
         if len(segments) > STORY_CONTEXT_SEGMENTS
         else segments
     )
+    is_en = STORY_LANGUAGE.lower().startswith("en")
     if not recent:
-        return "（暂无故事历史，这是第一段）"
-    return "\n\n".join(f"第 {s['id']+1} 段：\n{s['text']}" for s in recent)
+        return "(No story history yet. This is the first segment.)" if is_en else "（暂无故事历史，这是第一段）"
+    return "\n\n".join(
+        (f"Segment {s['id']+1}:\n{s['text']}" if is_en else f"第 {s['id']+1} 段：\n{s['text']}")
+        for s in recent
+    )
 
 
 def build_character_id_text():
-    """Return a list of all character IDs seen so far, to help the LLM reuse them."""
     seen = {}
     for seg in story_state.get("segments", []):
         for cp in seg.get("character_prompts", []):
@@ -363,26 +470,35 @@ def build_character_id_text():
                 seen[cid] = True
     if not seen:
         return ""
+    is_en = STORY_LANGUAGE.lower().startswith("en")
+    if is_en:
+        return "[Existing character IDs (must reuse in continuation)]\n" + ", ".join(seen.keys())
     return "【已有角色 ID（续写时必须复用）】\n" + "、".join(seen.keys())
 
 
 def build_character_profile_text():
-    """
-    Build the {{CHARACTER_PROFILES}} block injected into every LLM prompt.
-    Tells the LLM which characters already have reference images and what
-    their first_prompt looks like, so it can write proper edit_prompts.
-    """
     profiles = story_state.get("character_profiles", {})
+    is_en = STORY_LANGUAGE.lower().startswith("en")
     if not profiles:
-        return "（暂无角色视觉档案，本段所有角色均为新角色）"
-
+        return (
+            "(No character profiles yet. All characters in this segment are new.)"
+            if is_en else
+            "（暂无角色视觉档案，本段所有角色均为新角色）"
+        )
     lines = []
     for cid, p in profiles.items():
-        source_note = "（用户上传图片）" if p.get("source") == "uploaded" else ""
-        lines.append(
-            f"- id: {cid}{source_note}\n"
-            f"  首次角色 prompt: {p.get('first_prompt', '')}"
-        )
+        if is_en:
+            source_note = " (user-uploaded image)" if p.get("source") == "uploaded" else ""
+            lines.append(
+                f"- id: {cid}{source_note}\n"
+                f"  first_prompt: {p.get('first_prompt', '')}"
+            )
+        else:
+            source_note = "（用户上传图片）" if p.get("source") == "uploaded" else ""
+            lines.append(
+                f"- id: {cid}{source_note}\n"
+                f"  首次角色 prompt: {p.get('first_prompt', '')}"
+            )
     return "\n".join(lines)
 
 
@@ -404,10 +520,6 @@ def build_user_prompt(direction, segment_id):
 
 # ─── Character Profile Management ────────────────────────────────────────────
 def update_character_profiles(segment_id, character_prompts, source="generated"):
-    """
-    Register new characters into story_state["character_profiles"].
-    Existing characters are NOT overwritten — first_prompt is the canonical reference.
-    """
     profiles = story_state.setdefault("character_profiles", {})
     for cp in character_prompts:
         cid = cp.get("id")
@@ -480,13 +592,13 @@ def start_llama_server():
 
     if _llama_api_ready():
         log.info("llama-server already ready")
-        broadcast_status("Qwen 语言模型已就绪")
+        broadcast_status(tr("Qwen 语言模型已就绪", "Qwen LLM ready"))
         _llm_ready = True
         return
 
     with _llama_start_lock:
         if _llama_api_ready():
-            broadcast_status("Qwen 语言模型已就绪")
+            broadcast_status(tr("Qwen 语言模型已就绪", "Qwen LLM ready"))
             _llm_ready = True
             return
 
@@ -521,7 +633,7 @@ def start_llama_server():
             cmd.extend(LLAMA_EXTRA_ARGS.split())
 
         log.info(f"Starting llama-server: {' '.join(cmd)}")
-        broadcast_status("正在启动 Qwen 语言模型...")
+        broadcast_status(tr("正在启动 Qwen 语言模型...", "Starting Qwen LLM..."))
         _llm_ready = False
 
         with _llama_proc_lock:
@@ -535,10 +647,13 @@ def start_llama_server():
             time.sleep(2)
             if _llama_api_ready():
                 log.info(f"llama-server ready after {(i+1)*2}s")
-                broadcast_status("Qwen 语言模型已就绪")
+                broadcast_status(tr("Qwen 语言模型已就绪", "Qwen LLM ready"))
                 _llm_ready = True
                 return
-            broadcast_status(f"等待 Qwen 模型加载... ({(i+1)*2}s)")
+            broadcast_status(tr(
+                f"等待 Qwen 模型加载... ({(i+1)*2}s)",
+                f"Waiting for Qwen LLM... ({(i+1)*2}s)",
+            ))
 
         _llm_ready = False
         raise RuntimeError("llama-server did not become ready within 120 s")
@@ -553,7 +668,7 @@ def prewarm_llama():
             start_llama_server()
         except Exception as e:
             log.warning(f"Pre-warm llama failed: {e}")
-            broadcast_status(f"Qwen 预热失败: {e}", "warning")
+            broadcast_status(tr(f"Qwen 预热失败: {e}", f"Qwen pre-warm failed: {e}"), "warning")
 
     threading.Thread(target=_worker, daemon=True, name="llama-prewarm").start()
 
@@ -570,7 +685,7 @@ def stop_llama_server():
         return
 
     log.info("Stopping llama-server...")
-    broadcast_status("正在关闭 Qwen 语言模型，释放显存...")
+    broadcast_status(tr("正在关闭 Qwen 语言模型，释放显存...", "Stopping Qwen LLM, freeing VRAM..."))
     try:
         proc.terminate()
         proc.wait(timeout=30)
@@ -587,11 +702,11 @@ def stop_llama_server():
 
 # ─── LLM Call ────────────────────────────────────────────────────────────────
 def call_qwen(direction, segment_id):
-    system_prompt = load_prompt_template("story_system_prompt.txt") or DEFAULT_SYSTEM_PROMPT
+    system_prompt = load_prompt_template(_select_system_prompt_filename()) or DEFAULT_SYSTEM_PROMPT
     user_prompt   = build_user_prompt(direction, segment_id)
 
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-    broadcast_status("Qwen 正在思考并生成完整 JSON...")
+    broadcast_status(tr("Qwen 正在思考并生成完整 JSON...", "Qwen is generating story JSON..."))
 
     common_kwargs = dict(
         model=OPENAI_MODEL,
@@ -601,6 +716,7 @@ def call_qwen(direction, segment_id):
         ],
     )
 
+    t0 = time.time()
     try:
         completion = client.chat.completions.create(
             **common_kwargs,
@@ -610,19 +726,28 @@ def call_qwen(direction, segment_id):
         log.warning(f"response_format not supported, retrying without it: {e}")
         completion = client.chat.completions.create(**common_kwargs)
 
-    broadcast_status("Qwen 回复已收到，正在解析 JSON...")
+    elapsed = time.time() - t0
+    log_perf("llm_call", elapsed, segment_id=segment_id)
+
+    broadcast_status(tr("Qwen 回复已收到，正在解析 JSON...", "Qwen response received, parsing JSON..."))
     raw = completion.choices[0].message.content or ""
 
-    with open(RAW_LLM_FILE, "w", encoding="utf-8") as f:
-        f.write(raw)
+    try:
+        with open(RAW_LLM_FILE, "w", encoding="utf-8") as f:
+            f.write(raw)
+    except Exception:
+        pass
     return raw
 
 
 def call_qwen_vision_parse(image_path: Path, user_text: str) -> str:
     if not LLAMA_MMPROJ_MODEL:
-        return "(图片解析不可用：未配置 LLAMA_MMPROJ_MODEL)"
+        return tr(
+            "(图片解析不可用：未配置 LLAMA_MMPROJ_MODEL)",
+            "(Image parsing unavailable: LLAMA_MMPROJ_MODEL not configured)",
+        )
 
-    broadcast_status("正在解析上传图片...")
+    broadcast_status(tr("正在解析上传图片...", "Parsing uploaded image..."))
 
     suffix = image_path.suffix.lower()
     mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -635,6 +760,21 @@ def call_qwen_vision_parse(image_path: Path, user_text: str) -> str:
 
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
+    is_en_story = STORY_LANGUAGE.lower().startswith("en")
+    if is_en_story:
+        vision_text = (
+            "Please describe in detail the person's appearance, outfit, expression, "
+            "pose, and background environment in this image. "
+            "If there is any text in the image, please also mention it."
+            f"\n\nUser note: {user_text}"
+        )
+    else:
+        vision_text = (
+            "请详细描述这张图片中的人物外貌、服装、表情、姿势和背景环境。"
+            "如果图片中有文字，也请一并说明。"
+            f"\n\n用户附加说明：{user_text}"
+        )
+
     try:
         completion = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -642,56 +782,56 @@ def call_qwen_vision_parse(image_path: Path, user_text: str) -> str:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "请详细描述这张图片中的人物外貌、服装、表情、姿势和背景环境。"
-                                "如果图片中有文字，也请一并说明。"
-                                f"\n\n用户附加说明：{user_text}"
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
+                        {"type": "text", "text": vision_text},
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
             ],
         )
         result = completion.choices[0].message.content or ""
-        broadcast_status("图片解析完成")
+        broadcast_status(tr("图片解析完成", "Image parsing complete"))
         return result
     except Exception as e:
-        err_msg = f"图片解析失败: {e}"
+        err_msg = tr(f"图片解析失败: {e}", f"Image parsing failed: {e}")
         log.error(err_msg)
         log_error(err_msg)
         broadcast_status(err_msg, "warning")
-        return f"(图片解析失败: {e})"
+        return f"({err_msg})"
 
 
 def call_qwen_with_image(image_path: Path, user_text: str, segment_id: int) -> str:
-    """
-    Parse image, combine with user text, then call story generation.
-    A one-time single-character constraint is injected (not stored in history).
-    """
     image_description = call_qwen_vision_parse(image_path, user_text)
 
-    upload_rule = (
-        "\n\n【本轮上传图片强制规则（仅本轮有效，不影响后续段落）】\n"
-        "1. 本轮 character_prompts 只能包含 1 个角色，即上传图片中的这名角色。\n"
-        "2. 禁止在本轮 character_prompts 中出现已有故事里的其他角色。\n"
-        "3. 如果用户文本中提到其他角色，只能作为背景信息，不得为其生成 character_prompts。\n"
-        "4. 本轮上传图片将被绑定为 character_prompts[0].id 对应的角色立绘。"
-    )
-
-    combined_direction = (
-        f"{user_text}\n\n"
-        f"【用户上传图片的内容描述】\n{image_description}"
-        f"{upload_rule}"
-    )
+    is_en_story = STORY_LANGUAGE.lower().startswith("en")
+    if is_en_story:
+        upload_rule = (
+            "\n\n[Mandatory rule for this round (one-time only, does not affect future segments)]\n"
+            "1. character_prompts this round must contain exactly 1 character: the person in the uploaded image.\n"
+            "2. Do not include any other existing story characters in character_prompts this round.\n"
+            "3. If the user text mentions other characters, treat them as background information only.\n"
+            "4. The uploaded image will be bound as the portrait for character_prompts[0].id."
+        )
+        combined_direction = (
+            f"{user_text}\n\n"
+            f"[Description of the uploaded image]\n{image_description}"
+            f"{upload_rule}"
+        )
+    else:
+        upload_rule = (
+            "\n\n【本轮上传图片强制规则（仅本轮有效，不影响后续段落）】\n"
+            "1. 本轮 character_prompts 只能包含 1 个角色，即上传图片中的这名角色。\n"
+            "2. 禁止在本轮 character_prompts 中出现已有故事里的其他角色。\n"
+            "3. 如果用户文本中提到其他角色，只能作为背景信息，不得为其生成 character_prompts。\n"
+            "4. 本轮上传图片将被绑定为 character_prompts[0].id 对应的角色立绘。"
+        )
+        combined_direction = (
+            f"{user_text}\n\n"
+            f"【用户上传图片的内容描述】\n{image_description}"
+            f"{upload_rule}"
+        )
     return call_qwen(combined_direction, segment_id)
 
-# ─── JSON Parsing ────────────────────────────────────────────────────────────
+# ─── JSON Parsing & Repair ────────────────────────────────────────────────────
 def parse_llm_json(raw):
     for attempt in (
         lambda: json.loads(raw),
@@ -704,6 +844,64 @@ def parse_llm_json(raw):
             pass
     raise ValueError(f"Cannot parse JSON from LLM output: {raw[:300]}")
 
+
+def repair_llm_json(raw: str) -> str:
+    """
+    Send malformed LLM output back to the LLM for JSON repair.
+    Uses head+tail truncation to stay within LLM_JSON_REPAIR_MAX_CHARS.
+    Only called when parse_llm_json() fails. Does NOT affect normal successful output.
+    """
+    half = LLM_JSON_REPAIR_MAX_CHARS // 2
+    if len(raw) <= LLM_JSON_REPAIR_MAX_CHARS:
+        repair_input = raw
+    else:
+        omitted = len(raw) - LLM_JSON_REPAIR_MAX_CHARS
+        repair_input = raw[:half] + f"\n[... {omitted} chars omitted ...]\n" + raw[-half:]
+
+    try:
+        with open(RAW_LLM_REPAIR_INPUT, "w", encoding="utf-8") as f:
+            f.write(repair_input)
+    except Exception:
+        pass
+
+    broadcast_status(tr("JSON 解析失败，正在尝试自动修复...", "JSON parse failed, attempting auto-repair..."))
+
+    repair_system = (
+        "You are a JSON repair assistant. "
+        "The user will provide malformed JSON text. "
+        "Return ONLY the corrected valid JSON object. "
+        "Do not add markdown. Do not add explanations. "
+        "Do not change the story content, only fix the JSON syntax."
+    )
+    repair_user = f"Fix this malformed JSON:\n\n{repair_input}"
+
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    t0 = time.time()
+    try:
+        completion = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": repair_system},
+                {"role": "user",   "content": repair_user},
+            ],
+        )
+        repaired = completion.choices[0].message.content or ""
+        elapsed = time.time() - t0
+        log_perf("json_repair", elapsed)
+
+        try:
+            with open(RAW_LLM_REPAIRED, "w", encoding="utf-8") as f:
+                f.write(repaired)
+        except Exception:
+            pass
+
+        broadcast_status(tr("JSON 自动修复完成", "JSON auto-repair complete"))
+        return repaired
+    except Exception as e:
+        elapsed = time.time() - t0
+        log_perf("json_repair", elapsed, error=str(e))
+        raise ValueError(f"JSON repair LLM call failed: {e}")
+
 # ─── Segment Post-processing ─────────────────────────────────────────────────
 def sanitize_id(raw_id):
     if not raw_id:
@@ -715,20 +913,41 @@ def sanitize_id(raw_id):
 def postprocess_segment(raw_json_str, segment_id, user_text="",
                         skip_character_generation=False,
                         uploaded_image_path: Optional[Path] = None):
+    t0 = time.time()
+    data = None
+
+    # First attempt: direct parse
     try:
         data = parse_llm_json(raw_json_str)
-    except ValueError as e:
-        err = f"JSON parse error for segment {segment_id}: {e}"
-        log.error(err)
-        log_error(err)
-        data = {"text": f"（第 {segment_id+1} 段生成失败，请重试）",
-                "character_prompts": [], "background_prompt": None}
+    except ValueError as parse_err:
+        # Second attempt: LLM JSON repair
+        if ENABLE_LLM_JSON_REPAIR:
+            try:
+                repaired_raw = repair_llm_json(raw_json_str)
+                data = parse_llm_json(repaired_raw)
+                log.info(f"JSON repair succeeded for segment {segment_id}")
+            except Exception as repair_err:
+                log.error(f"JSON repair also failed for segment {segment_id}: {repair_err}")
+
+        if data is None:
+            err = f"JSON parse error for segment {segment_id}: {parse_err}"
+            log.error(err)
+            log_error(err)
+            data = {
+                "text": tr(
+                    f"（第 {segment_id+1} 段生成失败，请重试）",
+                    f"(Segment {segment_id+1} generation failed, please try again)",
+                ),
+                "character_prompts": [],
+                "background_prompt": None,
+            }
+
+    log_perf("json_parse", time.time() - t0, segment_id=segment_id)
 
     text      = data.get("text", "")
     raw_chars = data.get("character_prompts", [])
     if not isinstance(raw_chars, list):
         raw_chars = []
-    # Image-upload rounds: enforce single character as backend safety net
     raw_chars = raw_chars[:1] if skip_character_generation else raw_chars[:2]
 
     character_prompts = []
@@ -737,9 +956,9 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
     for idx, cp in enumerate(raw_chars):
         if not isinstance(cp, dict):
             continue
-        cid        = sanitize_id(cp.get("id", "character"))
-        cprompt    = str(cp.get("prompt", ""))
-        cedit      = str(cp.get("edit_prompt", ""))
+        cid     = sanitize_id(cp.get("id", "character"))
+        cprompt = str(cp.get("prompt", ""))
+        cedit   = str(cp.get("edit_prompt", ""))
         character_prompts.append({"id": cid, "prompt": cprompt, "edit_prompt": cedit})
 
         if skip_character_generation and idx == 0 and uploaded_image_path:
@@ -753,21 +972,19 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
                     "file": dest_filename,
                     "source": "uploaded",
                 })
-                # Register for forced Qwen Edit
                 force_ids = story_state.setdefault("force_qwen_edit_character_ids", [])
                 if cid not in force_ids:
                     force_ids.append(cid)
                     log.info(f"Character '{cid}' registered for forced Qwen Edit (uploaded reference)")
-                    broadcast_status(
+                    broadcast_status(tr(
                         f"已将上传图绑定为角色 {cid} 的参考图，后续该角色将强制使用 Qwen Edit。",
-                        "success",
-                    )
-                # Register in character_profiles with source=uploaded
+                        f"Uploaded image bound as reference for character '{cid}'. Qwen Edit will be used in future segments.",
+                    ), "success")
                 profiles = story_state.setdefault("character_profiles", {})
                 if cid not in profiles:
                     profiles[cid] = {
                         "id": cid,
-                        "first_prompt": cprompt or "（用户上传图片）",
+                        "first_prompt": cprompt or tr("（用户上传图片）", "(user-uploaded image)"),
                         "first_segment_id": segment_id,
                         "engine": "uploaded",
                         "source": "uploaded",
@@ -779,10 +996,10 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
                     "file": dest_filename,
                 })
         elif skip_character_generation and idx == 0 and not uploaded_image_path:
-            broadcast_status(
+            broadcast_status(tr(
                 "本轮未识别到角色 id 或上传图片保存失败，上传图不会作为角色参考图复用。",
-                "warning",
-            )
+                "No character id found or uploaded image save failed; the uploaded image will not be reused as a character reference.",
+            ), "warning")
         elif skip_character_generation:
             pass
         else:
@@ -791,7 +1008,6 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
                 "file": f"segment_{segment_id:03d}_character_{cid}.png",
             })
 
-    # Update character profiles for non-upload rounds
     if not skip_character_generation:
         update_character_profiles(segment_id, character_prompts)
 
@@ -802,10 +1018,11 @@ def postprocess_segment(raw_json_str, segment_id, user_text="",
         bgid     = sanitize_id(raw_bg.get("id", "background"))
         bgprompt = str(raw_bg.get("prompt", ""))
         background_prompt = {"id": bgid, "prompt": bgprompt}
-        background_image  = {
-            "id": bgid, "status": "pending", "url": None,
-            "file": f"segment_{segment_id:03d}_background_{bgid}.png",
-        }
+        if ENABLE_BACKGROUND_GENERATION:
+            background_image = {
+                "id": bgid, "status": "pending", "url": None,
+                "file": f"segment_{segment_id:03d}_background_{bgid}.png",
+            }
 
     return {
         "id": segment_id,
@@ -824,6 +1041,12 @@ def _update_image_status(seg_id, image_type, item_id, status, url=None):
         seg = next((s for s in story_state["segments"] if s["id"] == seg_id), None)
         if not seg:
             return
+        # Add a cache-buster to done URLs so browsers always reload the new image.
+        # This is critical for regen: the filename is reused, so without a buster
+        # the browser would show the old cached image.
+        if url and status == "done":
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}v={int(time.time())}"
         if image_type == "background":
             bi = seg.get("background_image")
             if bi:
@@ -837,10 +1060,34 @@ def _update_image_status(seg_id, image_type, item_id, status, url=None):
                     if url:
                         ci["url"] = url
                     break
-    save_story()
+    # Use backup=False for frequent image status updates to avoid excessive backups.
+    save_story(backup=False)
 
 
-def find_first_character_image(character_id, before_segment_id):
+def is_segment_images_finished(seg) -> bool:
+    """
+    Return True only when ALL images in a segment have reached a terminal state
+    (done or failed). A segment with no images at all is considered finished.
+    Used to gate regen requests: we only allow regen when the segment is fully done.
+    """
+    if not seg:
+        return False
+    bi = seg.get("background_image")
+    if bi and bi.get("status") not in ("done", "failed"):
+        return False
+    for ci in seg.get("character_images", []):
+        if ci.get("status") not in ("done", "failed"):
+            return False
+    return True
+
+
+def find_character_reference_image(character_id: str, before_segment_id: int) -> Optional[Path]:
+    """
+    Find a reference image for a character based on QWEN_EDIT_REFERENCE_POLICY.
+    latest: most recent successful image before before_segment_id (recommended)
+    first:  first successful image before before_segment_id
+    """
+    candidates = []
     for seg in story_state.get("segments", []):
         if seg["id"] >= before_segment_id:
             continue
@@ -848,8 +1095,15 @@ def find_first_character_image(character_id, before_segment_id):
             if img.get("id") == character_id and img.get("status") == "done":
                 p = GENERATED_DIR / img["file"]
                 if p.exists():
-                    return p
-    return None
+                    candidates.append((seg["id"], p))
+
+    if not candidates:
+        return None
+
+    if QWEN_EDIT_REFERENCE_POLICY == "latest":
+        return max(candidates, key=lambda x: x[0])[1]
+    else:  # first
+        return min(candidates, key=lambda x: x[0])[1]
 
 # ─── Image Task Dataclass ─────────────────────────────────────────────────────
 @dataclass
@@ -890,7 +1144,7 @@ def build_image_queues(segment):
             continue
 
         use_edit = USE_QWEN_EDIT_FOR_RECURRING or cid in force_ids
-        ref = find_first_character_image(cid, seg_id) if use_edit else None
+        ref = find_character_reference_image(cid, seg_id) if use_edit else None
 
         task = ImageTask(
             seg_id=seg_id, image_type="character", item_id=cid,
@@ -923,7 +1177,7 @@ def _load_sdxl():
     global _sdxl_pipe
     if _sdxl_pipe is not None:
         return _sdxl_pipe
-    broadcast_status("正在加载 SDXL 模型...")
+    broadcast_status(tr("正在加载 SDXL 模型...", "Loading SDXL model..."))
     import torch
     from diffusers import StableDiffusionXLPipeline
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
@@ -964,6 +1218,7 @@ def run_sdxl_queue(tasks: List[ImageTask]):
         return
     import torch
     from collections import defaultdict
+    t0 = time.time()
     pipe = _load_sdxl()
     groups = defaultdict(list)
     for t in tasks:
@@ -972,10 +1227,12 @@ def run_sdxl_queue(tasks: List[ImageTask]):
     for (w, h), group in groups.items():
         batches = list(_chunks(group, SDXL_MAX_BATCH_SIZE))
         for batch_idx, batch in enumerate(batches):
-            broadcast_status(
-                f"SDXL 生成中 ({w}×{h})，批次 {batch_idx+1}/{len(batches)}，"
-                f"本批 {len(batch)} 张: " + ", ".join(t.item_id for t in batch)
-            )
+            broadcast_status(tr(
+                f"SDXL 生成中 ({w}x{h})，批次 {batch_idx+1}/{len(batches)}，"
+                f"本批 {len(batch)} 张: " + ", ".join(t.item_id for t in batch),
+                f"SDXL generating ({w}x{h}), batch {batch_idx+1}/{len(batches)}, "
+                f"{len(batch)} image(s): " + ", ".join(t.item_id for t in batch),
+            ))
             try:
                 with torch.inference_mode():
                     images = pipe(
@@ -997,6 +1254,7 @@ def run_sdxl_queue(tasks: List[ImageTask]):
                 for task in batch:
                     _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
     _unload_sdxl()
+    log_perf("sdxl_queue", time.time() - t0, count=len(tasks))
 
 # ─── ZImage Serial Generation ─────────────────────────────────────────────────
 _zimage_pipe = None
@@ -1006,7 +1264,7 @@ def _load_zimage():
     global _zimage_pipe
     if _zimage_pipe is not None:
         return _zimage_pipe
-    broadcast_status("正在加载 ZImage 模型（进程内）...")
+    broadcast_status(tr("正在加载 ZImage 模型（进程内）...", "Loading ZImage model (in-process)..."))
     import torch
     from diffusers import ZImagePipeline
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
@@ -1059,16 +1317,17 @@ def _unload_zimage():
     log.info("ZImage model unloaded (inprocess)")
 
 
-def run_zimage_queue_inprocess(tasks: List[ImageTask]):
-    """ZImage generates images serially inside the current process."""
+def run_zimage_queue_inprocess(tasks):
     if not tasks:
         return
+    t0 = time.time()
     try:
         pipe = _load_zimage()
         for idx, task in enumerate(tasks):
-            broadcast_status(
-                f"ZImage 生成中（进程内）：{task.item_id}，第 {idx+1}/{len(tasks)} 张..."
-            )
+            broadcast_status(tr(
+                f"ZImage 生成中（进程内）：{task.item_id}，第 {idx+1}/{len(tasks)} 张...",
+                f"ZImage generating (in-process): {task.item_id}, {idx+1}/{len(tasks)}...",
+            ))
             try:
                 result = pipe(
                     prompt=task.prompt,
@@ -1092,21 +1351,16 @@ def run_zimage_queue_inprocess(tasks: List[ImageTask]):
                 _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
     finally:
         _unload_zimage()
+    log_perf("zimage_queue_inprocess", time.time() - t0, count=len(tasks))
 
 
-def run_zimage_queue_subprocess(tasks: List[ImageTask]):
-    """
-    ZImage generates images in a child process.
-    When the child exits, the OS reclaims all ZImage CPU RAM and CUDA memory,
-    so Qwen Edit (loaded afterwards) is not slowed down by residue.
-    """
+def run_zimage_queue_subprocess(tasks):
     if not tasks:
         return
-
+    t0 = time.time()
     ts = int(time.time() * 1000)
     tasks_file   = DATA_DIR / f"zimage_tasks_{ts}.json"
     results_file = DATA_DIR / f"zimage_results_{ts}.json"
-
     payload = {
         "config": {
             "model_path":         ZIMAGE_MODEL_PATH,
@@ -1119,80 +1373,106 @@ def run_zimage_queue_subprocess(tasks: List[ImageTask]):
             "generated_dir":      str(GENERATED_DIR),
         },
         "tasks": [
-            {
-                "seg_id":     t.seg_id,
-                "image_type": t.image_type,
-                "item_id":    t.item_id,
-                "prompt":     t.prompt,
-                "filename":   t.filename,
-                "width":      t.width,
-                "height":     t.height,
-            }
+            {"seg_id": t.seg_id, "image_type": t.image_type, "item_id": t.item_id,
+             "prompt": t.prompt, "filename": t.filename, "width": t.width, "height": t.height}
             for t in tasks
         ],
     }
-
     with open(tasks_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    broadcast_status(f"ZImage 子进程启动，共 {len(tasks)} 张...")
+    broadcast_status(tr(
+        f"ZImage 子进程启动，共 {len(tasks)} 张...",
+        f"ZImage subprocess started, {len(tasks)} image(s)...",
+    ))
     log.info(f"ZImage subprocess: tasks={tasks_file}, results={results_file}")
 
-    try:
-        result = subprocess.run(
-            [sys.executable, str(BASE_DIR / "zimage_worker.py"),
-             "--tasks",   str(tasks_file),
-             "--results", str(results_file)],
-            capture_output=False,
-            timeout=3600,
-        )
-        if result.returncode != 0:
-            log.error(f"ZImage worker exited with code {result.returncode}")
-    except subprocess.TimeoutExpired:
-        log.error("ZImage worker timed out after 3600s")
-    except Exception as e:
-        log.error(f"ZImage worker launch failed: {e}")
-        log_error(f"ZImage worker launch failed: {e}")
-        for task in tasks:
-            _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
-        return
+    # ── Launch worker and poll results file progressively ──────────────────
+    # The worker writes results atomically after each image, so we can update
+    # the UI one image at a time without waiting for the whole batch.
+    POLL_INTERVAL = 0.5   # seconds between result-file polls
+    seen_items: set = set()
 
-    # Read results
-    if results_file.exists():
+    def _poll_results():
+        """Read results file and update status for any new entries."""
+        if not results_file.exists():
+            return
         try:
             with open(results_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for r in data.get("results", []):
-                _update_image_status(
-                    r["seg_id"], r["image_type"], r["item_id"],
-                    r["status"], r.get("url"),
-                )
-                log.info(f"ZImage result: {r['item_id']} → {r['status']}")
-        except Exception as e:
-            log.error(f"Failed to read ZImage results: {e}")
-    else:
-        log.error(f"ZImage results file not found: {results_file}")
+                key = f"{r['seg_id']}:{r['image_type']}:{r['item_id']}"
+                if key not in seen_items:
+                    seen_items.add(key)
+                    _update_image_status(r["seg_id"], r["image_type"], r["item_id"],
+                                         r["status"], r.get("url"))
+                    log.info(f"ZImage result (progressive): {r['item_id']} -> {r['status']}")
+        except Exception:
+            pass  # partial write — skip this poll, retry next
+
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(BASE_DIR / "zimage_worker.py"),
+             "--tasks", str(tasks_file), "--results", str(results_file)],
+        )
+        # Poll while worker is running
+        while proc.poll() is None:
+            time.sleep(POLL_INTERVAL)
+            _poll_results()
+        # Final poll after worker exits
+        _poll_results()
+        if proc.returncode != 0:
+            log.error(f"ZImage worker exited with code {proc.returncode}")
+    except Exception as e:
+        log.error(f"ZImage worker launch failed: {e}")
+        log_error(f"ZImage worker launch failed: {e}")
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         for task in tasks:
             _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
+        return
 
-    # Cleanup temp files
+    # Mark any tasks that never appeared in results as failed
+    result_ids = set()
+    if results_file.exists():
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            result_ids = {
+                f"{r['seg_id']}:{r['image_type']}:{r['item_id']}"
+                for r in data.get("results", [])
+            }
+        except Exception as e:
+            log.error(f"Failed to read final ZImage results: {e}")
+    for task in tasks:
+        key = f"{task.seg_id}:{task.image_type}:{task.item_id}"
+        if key not in result_ids:
+            log.warning(f"ZImage task missing from results, marking failed: {key}")
+            _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
+
     for p in (tasks_file, results_file):
         try:
             p.unlink(missing_ok=True)
         except Exception:
             pass
+    broadcast_status(tr(
+        f"ZImage 子进程完成，共 {len(tasks)} 张",
+        f"ZImage subprocess done, {len(tasks)} image(s)",
+    ))
+    log_perf("zimage_queue_subprocess", time.time() - t0, count=len(tasks))
 
-    broadcast_status(f"ZImage 子进程完成，共 {len(tasks)} 张")
 
-
-def run_zimage_queue(tasks: List[ImageTask]):
-    """Route ZImage tasks to subprocess or inprocess based on ZIMAGE_RUN_MODE."""
+def run_zimage_queue(tasks):
     if not tasks:
         return
     if ZIMAGE_RUN_MODE == "subprocess":
         run_zimage_queue_subprocess(tasks)
     else:
         run_zimage_queue_inprocess(tasks)
+
 
 # ─── Qwen Edit Serial Generation ─────────────────────────────────────────────
 _qwen_edit_pipe = None
@@ -1202,7 +1482,7 @@ def _load_qwen_edit():
     global _qwen_edit_pipe
     if _qwen_edit_pipe is not None:
         return _qwen_edit_pipe
-    broadcast_status("正在加载 Qwen Edit 模型...")
+    broadcast_status(tr("正在加载 Qwen Edit 模型...", "Loading Qwen Edit model..."))
     from stable_diffusion_cpp import StableDiffusion
     _qwen_edit_pipe = StableDiffusion(
         diffusion_model_path=QWEN_EDIT_DIFFUSION_MODEL_PATH,
@@ -1229,29 +1509,29 @@ def _unload_qwen_edit():
     log.info("Qwen Edit model unloaded")
 
 
-def build_qwen_edit_prompt(task: ImageTask) -> str:
-    """
-    Build an edit-style prompt for Qwen Edit.
-    Prefers task.edit_prompt (LLM-generated editing instruction) over task.prompt.
-    Always appends a backend safety clause to preserve character identity.
-    """
+def build_qwen_edit_prompt(task):
     edit_text = task.edit_prompt or task.prompt
-    return (
-        "<lora:F2P:1>, "
-        f"{edit_text} "
-        "保持参考图中的人物身份、脸型、发型、发色、瞳色、服装主体、配饰和整体角色设计不变。"
-    )
+    if STORY_LANGUAGE.lower().startswith("en"):
+        suffix = (
+            "Keep the character identity, face shape, hairstyle, hair color, eye color, "
+            "main outfit, accessories, and overall character design unchanged."
+        )
+    else:
+        suffix = "保持参考图中的人物身份、脸型、发型、发色、瞳色、服装主体、配饰和整体角色设计不变。"
+    return f"<lora:F2P:1>, {edit_text} {suffix}"
 
 
-def run_qwen_edit_queue(tasks: List[ImageTask]):
+def run_qwen_edit_queue(tasks):
     if not tasks:
         return
+    t0 = time.time()
+    fallback_tasks = []
     sd = _load_qwen_edit()
     for idx, task in enumerate(tasks):
-        broadcast_status(
-            f"Qwen Edit 生成中 (角色一致性)：{task.item_id}，"
-            f"第 {idx+1}/{len(tasks)} 张..."
-        )
+        broadcast_status(tr(
+            f"Qwen Edit 生成中 (角色一致性)：{task.item_id}，第 {idx+1}/{len(tasks)} 张...",
+            f"Qwen Edit generating (character consistency): {task.item_id}, {idx+1}/{len(tasks)}...",
+        ))
         try:
             output = sd.generate_image(
                 prompt=build_qwen_edit_prompt(task),
@@ -1269,12 +1549,32 @@ def run_qwen_edit_queue(tasks: List[ImageTask]):
             err = f"Qwen Edit error ({task.filename}): {e}"
             log.error(err)
             log_error(err)
-            _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
+            if QWEN_EDIT_FALLBACK_TO_SDXL:
+                log.info(f"Qwen Edit failed for {task.item_id}, queuing SDXL fallback")
+                fallback_tasks.append(task)
+            else:
+                _update_image_status(task.seg_id, task.image_type, task.item_id, "failed")
     _unload_qwen_edit()
+    log_perf("qwen_edit_queue", time.time() - t0, count=len(tasks))
+    if fallback_tasks:
+        broadcast_status(tr(
+            f"Qwen Edit 失败，SDXL 补充生成 {len(fallback_tasks)} 张...",
+            f"Qwen Edit failed, SDXL fallback for {len(fallback_tasks)} image(s)...",
+        ))
+        sdxl_fallback = [
+            ImageTask(
+                seg_id=t.seg_id, image_type=t.image_type, item_id=t.item_id,
+                prompt=t.prompt, filename=t.filename,
+                width=SDXL_CHARACTER_WIDTH, height=SDXL_CHARACTER_HEIGHT,
+                ref_path=None, edit_prompt="",
+            )
+            for t in fallback_tasks
+        ]
+        run_sdxl_queue(sdxl_fallback)
+
 
 # ─── Base Engine Dispatcher ───────────────────────────────────────────────────
-def run_base_queue(tasks: List[ImageTask]):
-    """Route base (text-to-image) tasks to SDXL or ZImage based on mode."""
+def run_base_queue(tasks):
     if not tasks:
         return
     if BASE_IMAGE_ENGINE == "zimage":
@@ -1282,38 +1582,49 @@ def run_base_queue(tasks: List[ImageTask]):
     else:
         run_sdxl_queue(tasks)
 
+
 # ─── Batch Imaging ────────────────────────────────────────────────────────────
 def run_batch_imaging():
     global _is_batch_imaging
     _is_batch_imaging = True
-    batch_start = time.time()
+    t0 = time.time()
     try:
         base_tasks, edit_tasks = collect_all_pending_image_queues()
         total = len(base_tasks) + len(edit_tasks)
         if total == 0:
-            broadcast_status("没有待生成的图片", "info")
+            broadcast_status(tr("没有待生成的图片", "No pending images"), "info")
             return
-
-        broadcast_status(f"批量生图开始，共 {total} 张待生成...")
-
+        broadcast_status(tr(
+            f"批量生图开始，共 {total} 张待生成...",
+            f"Batch imaging started, {total} image(s) pending...",
+        ))
         if base_tasks:
             engine_name = "ZImage" if BASE_IMAGE_ENGINE == "zimage" else "SDXL"
-            broadcast_status(f"{engine_name} 批量队列：{len(base_tasks)} 张...")
+            broadcast_status(tr(
+                f"{engine_name} 批量队列：{len(base_tasks)} 张...",
+                f"{engine_name} batch queue: {len(base_tasks)} image(s)...",
+            ))
             run_base_queue(base_tasks)
-
         if edit_tasks:
-            broadcast_status(f"Qwen Edit 批量队列：{len(edit_tasks)} 张...")
+            broadcast_status(tr(
+                f"Qwen Edit 批量队列：{len(edit_tasks)} 张...",
+                f"Qwen Edit batch queue: {len(edit_tasks)} image(s)...",
+            ))
             run_qwen_edit_queue(edit_tasks)
-
-        elapsed = int(time.time() - batch_start)
-        broadcast_status(f"批量生图完成，总用时 {elapsed}s", "success")
+        elapsed = int(time.time() - t0)
+        log_perf("batch_imaging", time.time() - t0, total=total)
+        broadcast_status(tr(
+            f"批量生图完成，总用时 {elapsed}s",
+            f"Batch imaging complete, total time {elapsed}s",
+        ), "success")
     except Exception as e:
-        err = f"批量生图出错: {e}"
+        err = tr(f"批量生图出错: {e}", f"Batch imaging error: {e}")
         log.error(err, exc_info=True)
         log_error(err)
         broadcast_status(err, "error")
     finally:
         _is_batch_imaging = False
+
 
 # ─── Mock Generation ─────────────────────────────────────────────────────────
 MOCK_STORIES = [
@@ -1324,9 +1635,7 @@ MOCK_STORIES = [
     },
     {
         "text": "小鹿发现河边停着一艘没有船夫的小船，船头挂着一盏摇曳的灯笼。",
-        "character_prompts": [
-            {"id": "deer", "prompt": "1other, full_body, young deer, general, curious expression, moonlit night, front view, standing", "edit_prompt": "将图中角色改为好奇地看向河边小船的姿势，身体略微前倾，表情好奇，保持人物身份和整体设计不变。"},
-        ],
+        "character_prompts": [{"id": "deer", "prompt": "1other, full_body, young deer, general, curious expression, moonlit night, front view, standing", "edit_prompt": "将图中角色改为好奇地看向河边小船的姿势，身体略微前倾，表情好奇，保持人物身份和整体设计不变。"}],
         "background_prompt": {"id": "dock", "prompt": "general, misty riverside dock, glowing lantern reflections, night scene, fantasy"},
     },
     {
@@ -1339,16 +1648,15 @@ MOCK_STORIES = [
 
 def generate_mock_segment(segment_id, direction):
     base = MOCK_STORIES[segment_id % len(MOCK_STORIES)]
+    default_dir = tr("继续故事", "Continue the story")
     text = (f"（根据你的指引：{direction}）\n{base['text']}"
-            if direction and direction.strip() and direction.strip() != "继续故事"
+            if direction and direction.strip() and direction.strip() != default_dir
             else base["text"])
-    return json.dumps({"text": text,
-                       "character_prompts": base["character_prompts"],
-                       "background_prompt": base["background_prompt"]},
-                      ensure_ascii=False)
+    return json.dumps({"text": text, "character_prompts": base["character_prompts"],
+                       "background_prompt": base["background_prompt"]}, ensure_ascii=False)
 
 
-def generate_mock_image(task: ImageTask):
+def generate_mock_image(task):
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -1373,9 +1681,9 @@ def generate_mock_image(task: ImageTask):
     except Exception:
         font = sfont = ImageFont.load_default()
     draw.text((task.width//2, task.height//2 - 40), label,
-              fill=(255,255,255), font=font, anchor="mm")
+              fill=(255, 255, 255), font=font, anchor="mm")
     draw.text((task.width//2, task.height//2 + 40), f"{task.width}x{task.height}",
-              fill=(200,200,200), font=sfont, anchor="mm")
+              fill=(200, 200, 200), font=sfont, anchor="mm")
     time.sleep(0.5)
     img.save(GENERATED_DIR / task.filename)
     url = f"/static/generated/{task.filename}"
@@ -1386,51 +1694,185 @@ def generate_mock_image(task: ImageTask):
 def run_mock_image_queue(base_tasks, edit_tasks):
     all_tasks = base_tasks + edit_tasks
     for idx, task in enumerate(all_tasks):
-        broadcast_status(f"Mock 生图：{task.item_id}，第 {idx+1}/{len(all_tasks)} 张...")
+        broadcast_status(tr(
+            f"Mock 生图：{task.item_id}，第 {idx+1}/{len(all_tasks)} 张...",
+            f"Mock image: {task.item_id}, {idx+1}/{len(all_tasks)}...",
+        ))
         generate_mock_image(task)
 
+
+# ─── Regen Queue ─────────────────────────────────────────────────────────────
+def _enqueue_regen(seg_id, image_type, item_id):
+    """Add an image to the regen pending queue and start the debounce timer."""
+    global _regen_timer
+    key = f"{seg_id}:{image_type}:{item_id}"
+    with _regen_lock:
+        _regen_pending[key] = {"seg_id": seg_id, "image_type": image_type, "item_id": item_id}
+        if _regen_timer is None:
+            t = threading.Timer(REGEN_DEBOUNCE_MS / 1000.0, _start_regen_batch)
+            _regen_timer = t
+            t.start()
+            log.info(f"Regen debounce timer started ({REGEN_DEBOUNCE_MS}ms), key={key}")
+        else:
+            log.info(f"Regen queued (timer running): key={key}")
+
+
+def _start_regen_batch():
+    """Called by debounce timer. Starts the regen worker if not already running."""
+    global _regen_timer, _regen_worker_running
+    with _regen_lock:
+        _regen_timer = None
+        if _regen_worker_running:
+            log.info("Regen worker already running; pending items will be picked up after.")
+            return
+        if not _regen_pending:
+            return
+        batch = dict(_regen_pending)
+        _regen_pending.clear()
+        _regen_worker_running = True
+    threading.Thread(target=_run_regen_worker, args=(batch,), daemon=True, name="regen-worker").start()
+
+
+def _run_regen_worker(batch):
+    """Execute a batch of regen requests."""
+    global _regen_worker_running, _is_regen_imaging
+    _is_regen_imaging = True
+    t0 = time.time()
+    try:
+        base_tasks, edit_tasks = _build_regen_tasks(batch)
+        total = len(base_tasks) + len(edit_tasks)
+        if total == 0:
+            return
+        # Stop the pre-warmed LLM before loading image models to avoid VRAM overlap.
+        if not _mock_mode:
+            stop_llama_server()
+        broadcast_status(tr(f"重新生图：共 {total} 张...", f"Regenerating: {total} image(s)..."))
+        if _mock_mode:
+            run_mock_image_queue(base_tasks, edit_tasks)
+        else:
+            if base_tasks:
+                run_base_queue(base_tasks)
+            if edit_tasks:
+                run_qwen_edit_queue(edit_tasks)
+        elapsed = int(time.time() - t0)
+        log_perf("regen_batch", time.time() - t0, count=total)
+        broadcast_status(tr(
+            f"重新生图完成，共 {total} 张，用时 {elapsed}s",
+            f"Regeneration complete, {total} image(s), {elapsed}s",
+        ), "success")
+    except Exception as e:
+        log.error(f"Regen worker error: {e}", exc_info=True)
+        broadcast_status(tr(f"重新生图出错: {e}", f"Regeneration error: {e}"), "error")
+    finally:
+        _is_regen_imaging = False
+        _regen_worker_running = False
+        # Re-warm the LLM after regen so it is ready for the next segment.
+        if not _mock_mode:
+            prewarm_llama()
+        # If more items arrived while we were running, start another batch
+        with _regen_lock:
+            if _regen_pending and _regen_timer is None:
+                t = threading.Timer(0.1, _start_regen_batch)
+                _regen_timer = t
+                t.start()
+
+
+def _build_regen_tasks(requests):
+    """Build ImageTask lists from regen requests dict."""
+    base_tasks = []
+    edit_tasks = []
+    force_ids = story_state.get("force_qwen_edit_character_ids", [])
+
+    for key, req in requests.items():
+        seg_id     = req["seg_id"]
+        image_type = req["image_type"]
+        item_id    = req["item_id"]
+
+        seg = next((s for s in story_state.get("segments", []) if s["id"] == seg_id), None)
+        if not seg:
+            log.warning(f"Regen: segment {seg_id} not found")
+            continue
+
+        if image_type == "background":
+            bp = seg.get("background_prompt")
+            bi = seg.get("background_image")
+            if not bp or not bi:
+                log.warning(f"Regen: no background for segment {seg_id}")
+                continue
+            _update_image_status(seg_id, "background", bp["id"], "pending")
+            task = ImageTask(
+                seg_id=seg_id, image_type="background",
+                item_id=bp["id"], prompt=bp["prompt"],
+                filename=bi["file"],
+                width=SDXL_BACKGROUND_WIDTH, height=SDXL_BACKGROUND_HEIGHT,
+            )
+            base_tasks.append(task)
+        else:
+            cp = next((c for c in seg.get("character_prompts", []) if c["id"] == item_id), None)
+            ci = next((c for c in seg.get("character_images", []) if c["id"] == item_id), None)
+            if not cp or not ci:
+                log.warning(f"Regen: no character {item_id} in segment {seg_id}")
+                continue
+            _update_image_status(seg_id, "character", item_id, "pending")
+            use_edit = USE_QWEN_EDIT_FOR_RECURRING or item_id in force_ids
+            ref = find_character_reference_image(item_id, seg_id) if use_edit else None
+            task = ImageTask(
+                seg_id=seg_id, image_type="character", item_id=item_id,
+                prompt=cp["prompt"], edit_prompt=cp.get("edit_prompt", ""),
+                filename=ci["file"],
+                width=QWEN_EDIT_WIDTH if ref else SDXL_CHARACTER_WIDTH,
+                height=QWEN_EDIT_HEIGHT if ref else SDXL_CHARACTER_HEIGHT,
+                ref_path=ref,
+            )
+            (edit_tasks if ref else base_tasks).append(task)
+
+    return base_tasks, edit_tasks
+
+
 # ─── Core Generation Flow ────────────────────────────────────────────────────
-def run_generation(direction, user_text="", uploaded_image_path: Optional[Path] = None):
+def run_generation(direction, user_text="", uploaded_image_path=None):
     global _is_generating
 
     if not generation_lock.acquire(blocking=False):
-        broadcast_status("当前正在生成，请等待完成。", "warning")
+        broadcast_status(tr("当前正在生成，请等待完成。", "Generation in progress, please wait."), "warning")
         return
 
     _is_generating = True
     has_upload = uploaded_image_path is not None
+    seg_total_t0 = time.time()
 
     try:
         segment_id = len(story_state["segments"])
-        log.info(f"Generating segment {segment_id}, direction: {direction!r}, "
-                 f"upload: {uploaded_image_path}")
+        log.info(f"Generating segment {segment_id}, direction: {direction!r}, upload: {uploaded_image_path}")
 
-        # ── Phase 1: LLM text ──────────────────────────────────────────────
+        # Phase 1: LLM text
         if _mock_mode:
-            broadcast_status("Mock 模式：生成故事文本...")
+            broadcast_status(tr("Mock 模式：生成故事文本...", "Mock mode: generating story text..."))
             raw_json = generate_mock_segment(segment_id, direction)
         else:
+            t_llama = time.time()
             try:
                 start_llama_server()
             except Exception as e:
-                broadcast_status(f"llama-server 启动失败: {e}", "error")
+                broadcast_status(tr(f"llama-server 启动失败: {e}", f"llama-server start failed: {e}"), "error")
                 log_error(f"llama-server start failed: {e}")
                 return
+            log_perf("llama_start", time.time() - t_llama, segment_id=segment_id)
             try:
-                broadcast_status("正在提交故事请求...")
+                broadcast_status(tr("正在提交故事请求...", "Submitting story request..."))
                 if has_upload:
                     raw_json = call_qwen_with_image(uploaded_image_path, direction, segment_id)
                 else:
                     raw_json = call_qwen(direction, segment_id)
             except Exception as e:
-                broadcast_status(f"Qwen 调用失败: {e}", "error")
+                broadcast_status(tr(f"Qwen 调用失败: {e}", f"Qwen call failed: {e}"), "error")
                 log_error(f"Qwen call failed: {e}")
                 return
             finally:
                 if not _creative_mode:
                     stop_llama_server()
 
-        broadcast_status("正在解析故事 JSON...")
+        broadcast_status(tr("正在解析故事 JSON...", "Parsing story JSON..."))
         segment = postprocess_segment(
             raw_json, segment_id,
             user_text=user_text,
@@ -1440,36 +1882,51 @@ def run_generation(direction, user_text="", uploaded_image_path: Optional[Path] 
 
         with state_lock:
             story_state["segments"].append(segment)
-        save_story()
-        broadcast_status("故事文本已生成！")
+        save_story(backup=True)
+        broadcast_status(tr("故事文本已生成！", "Story text generated!"))
 
-        # ── Phase 2: Image generation ──────────────────────────────────────
+        # Phase 2: Image generation
         if _creative_mode:
-            broadcast_status("创作模式：图片已加入待生成队列，关闭创作模式后统一生成")
+            broadcast_status(tr(
+                "创作模式：图片已加入待生成队列，关闭创作模式后统一生成",
+                "Creative mode: images queued, will generate when creative mode is turned off",
+            ))
             return
 
         base_tasks, edit_tasks = build_image_queues(segment)
-        log.info(f"Image queues: {len(base_tasks)} base ({BASE_IMAGE_ENGINE}), "
-                 f"{len(edit_tasks)} Qwen Edit")
+        log.info(f"Image queues: {len(base_tasks)} base ({BASE_IMAGE_ENGINE}), {len(edit_tasks)} Qwen Edit")
 
+        t_img = time.time()
         if _mock_mode:
             run_mock_image_queue(base_tasks, edit_tasks)
         else:
             if base_tasks:
                 engine_name = "ZImage" if BASE_IMAGE_ENGINE == "zimage" else "SDXL"
-                broadcast_status(f"{engine_name} 队列：{len(base_tasks)} 张图...")
+                broadcast_status(tr(
+                    f"{engine_name} 队列：{len(base_tasks)} 张图...",
+                    f"{engine_name} queue: {len(base_tasks)} image(s)...",
+                ))
                 run_base_queue(base_tasks)
             if edit_tasks:
-                broadcast_status(f"Qwen Edit 队列：{len(edit_tasks)} 张图...")
+                broadcast_status(tr(
+                    f"Qwen Edit 队列：{len(edit_tasks)} 张图...",
+                    f"Qwen Edit queue: {len(edit_tasks)} image(s)...",
+                ))
                 run_qwen_edit_queue(edit_tasks)
+        log_perf("image_generation", time.time() - t_img, segment_id=segment_id,
+                 base=len(base_tasks), edit=len(edit_tasks))
 
-        broadcast_status(f"第 {segment_id+1} 段生成完成！", "success")
+        log_perf("segment_total", time.time() - seg_total_t0, segment_id=segment_id)
+        broadcast_status(tr(
+            f"第 {segment_id+1} 段生成完成！",
+            f"Segment {segment_id+1} complete!",
+        ), "success")
         prewarm_llama()
 
     except Exception as e:
         log.error(f"Generation error: {e}", exc_info=True)
         log_error(f"Generation error: {e}")
-        broadcast_status(f"生成出错: {e}", "error")
+        broadcast_status(tr(f"生成出错: {e}", f"Generation error: {e}"), "error")
     finally:
         _is_generating = False
         generation_lock.release()
@@ -1477,8 +1934,10 @@ def run_generation(direction, user_text="", uploaded_image_path: Optional[Path] 
 
 def run_creative_mode_off():
     global _creative_mode, _is_batch_imaging
-
-    broadcast_status("创作模式已关闭，正在关闭 Qwen 语言模型...")
+    broadcast_status(tr(
+        "创作模式已关闭，正在关闭 Qwen 语言模型...",
+        "Creative mode off, stopping Qwen LLM...",
+    ))
     if not _mock_mode:
         stop_llama_server()
 
@@ -1486,12 +1945,118 @@ def run_creative_mode_off():
         if _mock_mode:
             base_tasks, edit_tasks = collect_all_pending_image_queues()
             run_mock_image_queue(base_tasks, edit_tasks)
-            broadcast_status("批量生图完成（Mock 模式）", "success")
+            broadcast_status(tr("批量生图完成（Mock 模式）", "Batch imaging complete (mock mode)"), "success")
         else:
             run_batch_imaging()
         prewarm_llama()
 
     threading.Thread(target=_worker, daemon=True, name="batch-imaging").start()
+
+
+# ─── Shared API helpers ───────────────────────────────────────────────────────
+def _check_regen_preconditions(seg):
+    """
+    Return (ok, error_message) for regen pre-condition checks.
+    Regen is only allowed when:
+      1. Not currently writing story text (LLM generating)
+      2. Not currently batch imaging
+      3. Not currently regen imaging
+      4. The target segment's images are all in a terminal state (done/failed)
+    """
+    if _is_generating:
+        return False, tr(
+            "当前 LLM 正在生成故事，请等待本轮完成后再重新生图。",
+            "LLM is generating story text. Please wait before regenerating images.",
+        )
+    if _is_batch_imaging:
+        return False, tr(
+            "当前正在批量生图，请等待完成后再重新生图。",
+            "Batch imaging in progress. Please wait before regenerating.",
+        )
+    if _is_regen_imaging:
+        return False, tr(
+            "当前正在重新生图，请等待完成后再次点击。",
+            "Regeneration already in progress. Please wait.",
+        )
+    if not is_segment_images_finished(seg):
+        return False, tr(
+            "该段落图片尚未全部生成完毕，请等待所有图片生成结束后再重新生图。",
+            "This segment's images are not all finished yet. Please wait for generation to complete.",
+        )
+    return True, ""
+
+
+def _api_regenerate_image():
+    """Shared handler for POST /api/regenerate-image on both apps."""
+    data       = request.get_json() or {}
+    seg_id     = data.get("segment_id")
+    image_type = data.get("image_type")
+    item_id    = data.get("item_id")
+
+    if seg_id is None or not image_type or not item_id:
+        return jsonify({"ok": False, "message": "segment_id, image_type, item_id required"})
+
+    seg = next((s for s in story_state.get("segments", []) if s["id"] == seg_id), None)
+    if not seg:
+        return jsonify({"ok": False, "message": tr(f"段落 {seg_id} 不存在", f"Segment {seg_id} not found")})
+
+    # Pre-condition checks
+    ok, err = _check_regen_preconditions(seg)
+    if not ok:
+        return jsonify({"ok": False, "message": err})
+
+    # Protect uploaded reference images
+    if image_type == "character":
+        ci = next((c for c in seg.get("character_images", []) if c["id"] == item_id), None)
+        if ci and ci.get("source") == "uploaded":
+            return jsonify({"ok": False, "message": tr(
+                "上传参考图受保护，不能重新生成。",
+                "Uploaded reference images are protected and cannot be regenerated.",
+            )})
+
+    _enqueue_regen(seg_id, image_type, item_id)
+    return jsonify({"ok": True, "message": tr("已加入重生图队列", "Added to regen queue")})
+
+
+def _api_regenerate_segment_images():
+    """Shared handler for POST /api/regenerate-segment-images on both apps."""
+    data   = request.get_json() or {}
+    seg_id = data.get("segment_id")
+    if seg_id is None:
+        return jsonify({"ok": False, "message": "segment_id required"})
+
+    seg = next((s for s in story_state.get("segments", []) if s["id"] == seg_id), None)
+    if not seg:
+        return jsonify({"ok": False, "message": tr(f"段落 {seg_id} 不存在", f"Segment {seg_id} not found")})
+
+    # Pre-condition checks
+    ok, err = _check_regen_preconditions(seg)
+    if not ok:
+        return jsonify({"ok": False, "message": err})
+
+    queued = 0
+    for ci in seg.get("character_images", []):
+        if ci.get("source") == "uploaded":
+            continue
+        _enqueue_regen(seg_id, "character", ci["id"])
+        queued += 1
+    bi = seg.get("background_image")
+    if bi:
+        _enqueue_regen(seg_id, "background", seg["background_prompt"]["id"])
+        queued += 1
+
+    return jsonify({"ok": True, "queued": queued,
+                    "message": tr(f"已加入 {queued} 张重生图队列", f"Queued {queued} image(s) for regen")})
+
+
+def _api_current_index_post():
+    """Shared handler for POST /api/current-index."""
+    data = request.get_json() or {}
+    idx  = int(data.get("current_index", 0))
+    with state_lock:
+        story_state["current_index"] = idx
+    return jsonify({"ok": True})
+
 
 # ─── Mobile App Routes ───────────────────────────────────────────────────────
 @mobile_app.route("/")
@@ -1507,30 +2072,32 @@ def mobile_api_story():
 @mobile_app.route("/api/generate", methods=["POST"])
 def mobile_api_generate():
     if _serve_only:
-        return jsonify({"ok": False, "message": "当前为只读模式，无法生成新内容。"})
+        return jsonify({"ok": False, "message": tr("当前为只读模式，无法生成新内容。", "Read-only mode: generation disabled.")})
     if _is_generating:
-        return jsonify({"ok": False, "message": "当前正在生成，请等待完成。"})
+        return jsonify({"ok": False, "message": tr("当前正在生成，请等待完成。", "Generation in progress, please wait.")})
     if _is_batch_imaging:
-        return jsonify({"ok": False, "message": "当前正在批量生图，请等待完成。"})
+        return jsonify({"ok": False, "message": tr("当前正在批量生图，请等待完成。", "Batch imaging in progress, please wait.")})
 
     uploaded_image_path = None
 
     if request.content_type and "multipart/form-data" in request.content_type:
-        direction  = (request.form.get("direction") or "继续故事").strip() or "继续故事"
+        _default_dir = tr("继续故事", "Continue the story")
+        direction  = (request.form.get("direction") or _default_dir).strip() or _default_dir
         user_text  = direction
         image_file = request.files.get("image")
         if image_file and image_file.filename:
             ext = Path(image_file.filename).suffix.lower()
             if ext not in ALLOWED_IMAGE_EXTENSIONS:
-                return jsonify({"ok": False, "message": f"不支持的图片格式：{ext}"})
+                return jsonify({"ok": False, "message": tr(f"不支持的图片格式：{ext}", f"Unsupported image format: {ext}")})
             safe_name = f"upload_{int(time.time())}{ext}"
             save_path = UPLOADS_DIR / safe_name
             image_file.save(str(save_path))
             uploaded_image_path = save_path
             log.info(f"Uploaded image saved: {save_path}")
     else:
-        data       = request.get_json() or {}
-        direction  = (data.get("direction") or "继续故事").strip() or "继续故事"
+        data = request.get_json() or {}
+        _default_dir = tr("继续故事", "Continue the story")
+        direction  = (data.get("direction") or _default_dir).strip() or _default_dir
         user_text  = direction
 
     threading.Thread(
@@ -1539,41 +2106,56 @@ def mobile_api_generate():
         kwargs={"user_text": user_text, "uploaded_image_path": uploaded_image_path},
         daemon=True,
     ).start()
-    return jsonify({"ok": True, "message": "开始生成..."})
+    return jsonify({"ok": True, "message": tr("开始生成...", "Generation started...")})
 
 
 @mobile_app.route("/api/creative-mode", methods=["POST"])
 def mobile_api_creative_mode():
     global _creative_mode
     if _serve_only:
-        return jsonify({"ok": False, "message": "只读模式下无法切换创作模式。"})
+        return jsonify({"ok": False, "message": tr("只读模式下无法切换创作模式。", "Cannot toggle creative mode in read-only mode.")})
     if _is_generating:
-        return jsonify({"ok": False, "message": "当前 LLM 正在生成，请等待本轮完成后再切换。"})
+        return jsonify({"ok": False, "message": tr("当前 LLM 正在生成，请等待本轮完成后再切换。", "LLM is generating, please wait before toggling.")})
     if _is_batch_imaging:
-        return jsonify({"ok": False, "message": "当前正在批量生图，请等待完成后再切换。"})
+        return jsonify({"ok": False, "message": tr("当前正在批量生图，请等待完成后再切换。", "Batch imaging in progress, please wait before toggling.")})
 
     data   = request.get_json() or {}
     enable = bool(data.get("enable", False))
 
     if enable:
         if not _mock_mode and not _llm_ready:
-            return jsonify({"ok": False, "message": "Qwen 语言模型尚未就绪，请等待预热完成后再开启创作模式。"})
+            return jsonify({"ok": False, "message": tr(
+                "Qwen 语言模型尚未就绪，请等待预热完成后再开启创作模式。",
+                "Qwen LLM not ready yet. Please wait for pre-warm to complete.",
+            )})
         _creative_mode = True
-        broadcast_status("创作模式已开启：llama-server 保持运行，图片将在关闭创作模式后统一生成")
+        broadcast_status(tr(
+            "创作模式已开启：llama-server 保持运行，图片将在关闭创作模式后统一生成",
+            "Creative mode on: LLM stays running; images will generate when creative mode is turned off",
+        ))
         return jsonify({"ok": True, "creative_mode": True})
     else:
         _creative_mode = False
         threading.Thread(target=run_creative_mode_off, daemon=True, name="creative-off").start()
-        return jsonify({"ok": True, "creative_mode": False, "message": "创作模式已关闭，正在启动批量生图..."})
+        return jsonify({"ok": True, "creative_mode": False, "message": tr(
+            "创作模式已关闭，正在启动批量生图...",
+            "Creative mode off, starting batch imaging...",
+        )})
 
 
 @mobile_app.route("/api/current-index", methods=["POST"])
 def mobile_api_current_index():
-    data = request.get_json() or {}
-    idx  = int(data.get("current_index", 0))
-    with state_lock:
-        story_state["current_index"] = idx
-    return jsonify({"ok": True})
+    return _api_current_index_post()
+
+
+@mobile_app.route("/api/regenerate-image", methods=["POST"])
+def mobile_api_regenerate_image():
+    return _api_regenerate_image()
+
+
+@mobile_app.route("/api/regenerate-segment-images", methods=["POST"])
+def mobile_api_regenerate_segment():
+    return _api_regenerate_segment_images()
 
 
 @mobile_app.route("/api/status")
@@ -1581,12 +2163,14 @@ def mobile_api_status():
     return jsonify({
         "is_generating":    _is_generating,
         "is_batch_imaging": _is_batch_imaging,
+        "is_regen_imaging": _is_regen_imaging,
         "creative_mode":    _creative_mode,
         "llm_ready":        _llm_ready,
         "mode":             story_state.get("mode", "generate"),
         "segment_count":    len(story_state["segments"]),
         "latest_status":    get_latest_status(),
     })
+
 
 # ─── Desktop App Routes ──────────────────────────────────────────────────────
 @desktop_app.route("/")
@@ -1599,17 +2183,34 @@ def desktop_api_story():
     return jsonify(get_story_snapshot())
 
 
+@desktop_app.route("/api/current-index", methods=["POST"])
+def desktop_api_current_index():
+    return _api_current_index_post()
+
+
+@desktop_app.route("/api/regenerate-image", methods=["POST"])
+def desktop_api_regenerate_image():
+    return _api_regenerate_image()
+
+
+@desktop_app.route("/api/regenerate-segment-images", methods=["POST"])
+def desktop_api_regenerate_segment():
+    return _api_regenerate_segment_images()
+
+
 @desktop_app.route("/api/status")
 def desktop_api_status():
     return jsonify({
         "is_generating":    _is_generating,
         "is_batch_imaging": _is_batch_imaging,
+        "is_regen_imaging": _is_regen_imaging,
         "creative_mode":    _creative_mode,
         "llm_ready":        _llm_ready,
         "mode":             story_state.get("mode", "generate"),
         "segment_count":    len(story_state["segments"]),
         "latest_status":    get_latest_status(),
     })
+
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -1648,12 +2249,17 @@ def main():
     print("  oh-my-comic WebUI")
     print("=" * 60)
     print(f"  Mode          : {story_state['mode']}")
-    print(f"  Mobile        : http://{local_ip}:{MOBILE_PORT}  (手机访问)")
-    print(f"  Desktop       : http://127.0.0.1:{DESKTOP_PORT}  (电脑访问)")
+    print(f"  Mobile        : http://{local_ip}:{MOBILE_PORT}  (手机访问 / mobile)")
+    print(f"  Desktop       : http://127.0.0.1:{DESKTOP_PORT}  (电脑访问 / desktop)")
     print(f"  Segments      : {len(story_state['segments'])}")
     print(f"  LLM           : {OPENAI_BASE_URL}")
     print(f"  Prompt rating : {PROMPT_RATING}")
     print(f"  Image mode    : {mode_label}")
+    print(f"  UI language   : {UI_LANGUAGE}")
+    print(f"  Story language: {STORY_LANGUAGE}")
+    print(f"  Background gen: {'enabled' if ENABLE_BACKGROUND_GENERATION else 'DISABLED'}")
+    print(f"  Qwen Edit ref : {QWEN_EDIT_REFERENCE_POLICY}")
+    print(f"  Regen debounce: {REGEN_DEBOUNCE_MS}ms")
     if LLAMA_MMPROJ_MODEL:
         print(f"  Multimodal    : {LLAMA_MMPROJ_MODEL}")
     if _mock_mode:

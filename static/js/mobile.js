@@ -1,10 +1,101 @@
 /* ═══════════════════════════════════════════════════════════
    Mobile Story Client — pure fetch polling, no Socket.IO
    Polls /api/story every second for state updates.
+   Supports UI_LANGUAGE=zh-CN|en-US via /api/story response.
+   支持通过 /api/story 返回的 ui_language 切换界面语言。
 ═══════════════════════════════════════════════════════════ */
 
 (function () {
   'use strict';
+
+  // ── i18n dictionary ────────────────────────────────────
+  // 界面文案字典，支持 zh-CN 和 en-US。
+  // UI text dictionary supporting zh-CN and en-US.
+  var I18N = {
+    'zh-CN': {
+      connecting:          '正在连接服务器...',
+      connFailed:          '服务器连接失败，正在重试...',
+      sending:             '正在发送请求...',
+      generating:          '生成中，请稍候...',
+      reqFailed:           '请求失败',
+      netError:            '网络错误: ',
+      generate:            '生成',
+      creativeOff:         '创作模式',
+      creativeOn:          '创作模式 开',
+      creativeTitle:       '创作模式：开启后连续写文本，关闭后统一生图',
+      creativeTitleOn:     '创作模式已开启：连续写文本，关闭后统一生图',
+      creativeTitleWait:   '等待 Qwen 就绪后可开启',
+      creativeTitleReady:  '开启创作模式（需要 Qwen 就绪）',
+      creativeToggleFail:  '切换失败',
+      creativeOffStatus:   '创作模式已关闭，正在启动批量生图...',
+      emptyTitle:          '故事还没有开始。',
+      emptyHint:           '在下方输入你希望故事如何开始，然后点击「生成」。',
+      placeholder:         '输入你希望下一段故事如何发展...',
+      serveOnly:           '当前为只读模式，无法生成新内容。',
+      segLabel:            function (n) { return '第 ' + n + ' 段'; },
+      segStreaming:        function (n) { return '第 ' + n + ' 段 · 生成中…'; },
+      defaultDirection:    '继续故事',
+      imgPreviewAlt:       '预览',
+    },
+    'en-US': {
+      connecting:          'Connecting to server...',
+      connFailed:          'Server connection failed, retrying...',
+      sending:             'Sending request...',
+      generating:          'Generating, please wait...',
+      reqFailed:           'Request failed',
+      netError:            'Network error: ',
+      generate:            'Generate',
+      creativeOff:         'Creative Mode',
+      creativeOn:          'Creative Mode ON',
+      creativeTitle:       'Creative Mode: keep LLM running; images generated when turned off',
+      creativeTitleOn:     'Creative Mode ON: write multiple segments; images generated when turned off',
+      creativeTitleWait:   'Waiting for Qwen LLM to be ready',
+      creativeTitleReady:  'Enable Creative Mode (requires Qwen ready)',
+      creativeToggleFail:  'Toggle failed',
+      creativeOffStatus:   'Creative mode off, starting batch imaging...',
+      emptyTitle:          'The story has not started yet.',
+      emptyHint:           'Enter how you want the story to begin below, then click Generate.',
+      placeholder:         'Enter how you want the next segment to develop...',
+      serveOnly:           'Read-only mode: generation is disabled.',
+      segLabel:            function (n) { return 'Segment ' + n; },
+      segStreaming:        function (n) { return 'Segment ' + n + ' · Generating…'; },
+      defaultDirection:    'Continue the story',
+      imgPreviewAlt:       'Preview',
+    },
+  };
+
+  // Current UI language — updated from /api/story response.
+  // 当前界面语言，从 /api/story 返回值更新。
+  var LANG = 'zh-CN';
+
+  function t(key) {
+    var dict = I18N[LANG] || I18N['zh-CN'];
+    return dict[key] !== undefined ? dict[key] : (I18N['zh-CN'][key] || key);
+  }
+
+  // Apply i18n to static HTML elements.
+  // 将 i18n 应用到静态 HTML 元素。
+  function applyI18n() {
+    var emptyHintEl = document.getElementById('empty-hint');
+    if (emptyHintEl) {
+      var ps = emptyHintEl.querySelectorAll('p');
+      if (ps[0]) ps[0].textContent = t('emptyTitle');
+      if (ps[1]) ps[1].textContent = t('emptyHint');
+    }
+    var inp = document.getElementById('direction-input');
+    if (inp) inp.placeholder = t('placeholder');
+    var btnTxt = document.getElementById('btn-text');
+    if (btnTxt) btnTxt.textContent = t('generate');
+    var soHint = document.getElementById('serve-only-hint');
+    if (soHint) soHint.textContent = t('serveOnly');
+    var imgThumb = document.getElementById('image-preview-thumb');
+    if (imgThumb) imgThumb.alt = t('imgPreviewAlt');
+    updateCreativeToggle();
+  }
+
+  // Apply i18n immediately on load so static text is never blank.
+  // 页面加载时立即应用 i18n，避免静态文案空白。
+  applyI18n();
 
   // ── State ──────────────────────────────────────────────
   var storyState = { title: 'oh-my-comic', segments: [], mode: 'generate', current_index: 0 };
@@ -22,6 +113,7 @@
 
   // ── Pending user bubble ────────────────────────────────
   // Shown immediately after the user hits Send, before the server responds.
+  // 用户点击发送后立即显示，服务器响应前的占位气泡。
   var pendingBubbleEl = null;
   var pendingBubbleText = '';
 
@@ -34,7 +126,8 @@
   var emptyHint         = document.getElementById('empty-hint');
   var statusBar         = document.getElementById('status-bar');
   var statusText        = document.getElementById('status-text');
-  var headerStatus      = document.getElementById('header-status');
+  // header-status element removed — status is shown in the bottom status bar only.
+  // header-status 元素已移除，状态仅在底部状态栏显示。
   var generateBtn       = document.getElementById('generate-btn');
   var btnText           = document.getElementById('btn-text');
   var btnSpinner        = document.getElementById('btn-spinner');
@@ -57,11 +150,18 @@
     fetch('/api/story')
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        // Update language from server if changed.
+        // 如果服务器返回的语言有变化则更新。
+        var serverLang = data.ui_language || 'zh-CN';
+        if (serverLang !== LANG) {
+          LANG = serverLang;
+          applyI18n();
+        }
         handleStoryUpdate(data);
         pollTimer = setTimeout(poll, POLL_INTERVAL);
       })
       .catch(function () {
-        setStatus('服务器连接失败，正在重试...', 'error');
+        setStatus(t('connFailed'), 'error');
         pollTimer = setTimeout(poll, 3000);
       });
   }
@@ -84,7 +184,8 @@
     var busy         = generating || batchImaging;
     var status       = data.latest_status || {};
 
-    // Status bar — refresh every poll so elapsed seconds update
+    // Status bar — refresh every poll so elapsed seconds update.
+    // 每次轮询刷新状态栏，使计时秒数实时更新。
     if (status.message) {
       lastStatusMsg = status.message;
       setStatus(formatStatusWithElapsed(status, busy), status.type || 'info');
@@ -122,7 +223,8 @@
     // Render segments
     var segments = data.segments || [];
     if (segments.length === 0 && !data.streaming_segment) {
-      // If there is a pending user bubble, keep it visible and don't wipe the list
+      // If there is a pending user bubble, keep it visible and don't wipe the list.
+      // 如果有待显示的用户气泡，保留它，不清空列表。
       if (pendingBubbleEl && pendingBubbleEl.parentNode === segmentsList) {
         emptyHint.style.display = 'none';
         lastSegmentCount = 0;
@@ -186,7 +288,8 @@
 
   // ── Segment pair (user bubble + system card) ───────────
   function appendSegmentPair(seg) {
-    // Remove the pending bubble for this message (if it matches)
+    // Remove the pending bubble for this message (if it matches).
+    // 如果待显示气泡与当前段落匹配，则移除。
     if (pendingBubbleEl && seg.user_text &&
         seg.user_text.trim() === pendingBubbleText.trim()) {
       removePendingUserBubble();
@@ -223,7 +326,7 @@
       streamingCard.dataset.segId = seg.id;
       var numEl = document.createElement('div');
       numEl.className = 'segment-number';
-      numEl.textContent = '第 ' + (seg.id + 1) + ' 段 · 生成中…';
+      numEl.textContent = t('segStreaming')(seg.id + 1);
       streamingCard.appendChild(numEl);
       var textEl = document.createElement('div');
       textEl.className = 'segment-text';
@@ -245,7 +348,7 @@
 
     var numEl = document.createElement('div');
     numEl.className = 'segment-number';
-    numEl.textContent = '第 ' + (seg.id + 1) + ' 段';
+    numEl.textContent = t('segLabel')(seg.id + 1);
 
     var textEl = document.createElement('div');
     textEl.className = 'segment-text';
@@ -267,7 +370,6 @@
   function setStatus(message, type) {
     statusText.textContent = message;
     statusBar.className = 'status-bar status-' + (type || 'info');
-    headerStatus.textContent = message.length > 22 ? message.slice(0, 22) + '…' : message;
   }
 
   // ── Generating state ───────────────────────────────────
@@ -280,7 +382,8 @@
       btnText.classList.remove('hidden');
       btnSpinner.classList.add('hidden');
     }
-    // Also disable upload button while busy
+    // Also disable upload button while busy.
+    // 生成中时禁用上传按钮。
     if (uploadBtnLabel) {
       uploadBtnLabel.style.opacity = val ? '0.4' : '';
       uploadBtnLabel.style.pointerEvents = val ? 'none' : '';
@@ -290,26 +393,36 @@
   // ── Creative mode toggle ───────────────────────────────
   function updateCreativeToggle() {
     if (!creativeCb) return;
-    creativeCb.checked = creativeModeOn;
 
-    // Disable toggle when busy or LLM not ready (for enabling)
+    var isMock = storyState.mode === 'mock';
     var canToggle = !isGenerating && !isBatchImaging;
-    var canEnable = canToggle && (llmReady || storyState.mode === 'mock');
+    var canEnable = canToggle && (llmReady || isMock);
+
+    // Hide the entire toggle when LLM is not yet ready and creative mode is off.
+    // This avoids showing a toggle with no label text before the LLM warms up.
+    // 当 LLM 未就绪且创作模式未开启时，隐藏整个开关，避免显示空白文字。
+    if (creativeLabel) {
+      var shouldShow = creativeModeOn || llmReady || isMock;
+      creativeLabel.style.display = shouldShow ? '' : 'none';
+    }
+
+    creativeCb.checked = creativeModeOn;
     creativeCb.disabled = creativeModeOn ? !canToggle : !canEnable;
 
     if (creativeText) {
-      creativeText.textContent = creativeModeOn ? '创作模式 开' : '创作模式';
+      creativeText.textContent = creativeModeOn ? t('creativeOn') : t('creativeOff');
     }
     if (creativeLabel) {
       creativeLabel.title = creativeModeOn
-        ? '创作模式已开启：连续写文本，关闭后统一生图'
-        : (canEnable ? '开启创作模式（需要 Qwen 就绪）' : '等待 Qwen 就绪后可开启');
+        ? t('creativeTitleOn')
+        : (canEnable ? t('creativeTitleReady') : t('creativeTitleWait'));
     }
   }
 
   window.onCreativeModeChange = function (checkbox) {
     var enable = checkbox.checked;
-    // Revert immediately; will be updated by next poll
+    // Revert immediately; will be updated by next poll.
+    // 立即回退，等待下次轮询更新。
     checkbox.checked = creativeModeOn;
     checkbox.disabled = true;
 
@@ -321,18 +434,18 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) {
-          setStatus(data.message || '切换失败', 'error');
+          setStatus(data.message || t('creativeToggleFail'), 'error');
         } else {
           creativeModeOn = !!data.creative_mode;
           checkbox.checked = creativeModeOn;
           if (!enable) {
-            setStatus('创作模式已关闭，正在启动批量生图...', 'info');
+            setStatus(t('creativeOffStatus'), 'info');
           }
         }
         updateCreativeToggle();
       })
       .catch(function (err) {
-        setStatus('网络错误: ' + err.message, 'error');
+        setStatus(t('netError') + err.message, 'error');
         updateCreativeToggle();
       });
   };
@@ -365,14 +478,15 @@
     if (isGenerating || isBatchImaging) return;
     if (storyState.mode === 'serve-only') return;
 
-    var direction = directionInput.value.trim() || '继续故事';
+    var direction = directionInput.value.trim() || t('defaultDirection');
     var hasImage  = !!selectedImageFile;
 
-    // ── Show user bubble immediately ──────────────────────
+    // Show user bubble immediately.
+    // 立即显示用户气泡。
     showPendingUserBubble(direction, hasImage);
 
     setGenerating(true);
-    setStatus('正在发送请求...', 'info');
+    setStatus(t('sending'), 'info');
 
     var promise;
 
@@ -398,24 +512,26 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) {
-          // Request rejected — remove the pending bubble
+          // Request rejected — remove the pending bubble.
+          // 请求被拒绝，移除待显示气泡。
           removePendingUserBubble();
-          setStatus(data.message || '请求失败', 'error');
+          setStatus(data.message || t('reqFailed'), 'error');
           setGenerating(false);
         } else {
           directionInput.value = '';
           removeSelectedImage();
-          setStatus('生成中，请稍候...', 'info');
+          setStatus(t('generating'), 'info');
         }
       })
       .catch(function (err) {
         removePendingUserBubble();
-        setStatus('网络错误: ' + err.message, 'error');
+        setStatus(t('netError') + err.message, 'error');
         setGenerating(false);
       });
   };
 
-  // Enter (without Shift) submits
+  // Enter (without Shift) submits.
+  // Enter（不含 Shift）提交。
   directionInput.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -460,8 +576,7 @@
   }
 
   // ── Init ───────────────────────────────────────────────
-  setStatus('正在连接服务器...', 'info');
-  updateCreativeToggle();
+  setStatus(t('connecting'), 'info');
   startPolling();
 
 })();

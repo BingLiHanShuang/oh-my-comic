@@ -6,7 +6,8 @@ This script is launched as a child process by app.py when
 IMAGE_GENERATION_MODE=zimage_hybrid and ZIMAGE_RUN_MODE=subprocess.
 
 It loads ZImagePipeline, generates all requested images serially,
-writes results to a JSON file, then exits.
+and writes results to a JSON file after EACH image so the parent
+process can update the UI progressively (one image at a time).
 
 When this process exits, the OS reclaims all CPU RAM and CUDA memory
 that ZImage allocated — including accelerate offload hooks, transformer
@@ -24,6 +25,15 @@ import sys
 import time
 import traceback
 from pathlib import Path
+
+
+def _write_results_atomic(results_path: Path, results: list):
+    """Write results atomically: write to .tmp then rename."""
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = results_path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump({"results": results}, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(results_path)
 
 
 def main():
@@ -47,16 +57,16 @@ def main():
 
     if not tasks:
         print("[zimage_worker] No tasks, exiting.", file=sys.stderr)
-        _write_results(results_path, [])
+        _write_results_atomic(results_path, [])
         sys.exit(0)
 
     # ── Load ZImage ──────────────────────────────────────────────────────────
-    model_path        = cfg.get("model_path", "")
-    dtype_str         = cfg.get("dtype", "bfloat16")
-    steps             = int(cfg.get("steps", 9))
-    guidance_scale    = float(cfg.get("guidance_scale", 0.0))
-    attention_backend = cfg.get("attention_backend", "flash")
-    negative_prompt   = cfg.get("negative_prompt", "")
+    model_path         = cfg.get("model_path", "")
+    dtype_str          = cfg.get("dtype", "bfloat16")
+    steps              = int(cfg.get("steps", 9))
+    guidance_scale     = float(cfg.get("guidance_scale", 0.0))
+    attention_backend  = cfg.get("attention_backend", "flash")
+    negative_prompt    = cfg.get("negative_prompt", "")
     enable_cpu_offload = bool(cfg.get("enable_cpu_offload", True))
 
     print(f"[zimage_worker] Loading ZImage from: {model_path}", file=sys.stderr)
@@ -97,7 +107,7 @@ def main():
     except Exception as e:
         print(f"[zimage_worker] FATAL: failed to load ZImage: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        # Write all tasks as failed
+        # Write all tasks as failed immediately so parent can update UI
         results = [
             {
                 "seg_id":     t.get("seg_id"),
@@ -109,10 +119,10 @@ def main():
             }
             for t in tasks
         ]
-        _write_results(results_path, results)
+        _write_results_atomic(results_path, results)
         sys.exit(1)
 
-    # ── Generate images serially ─────────────────────────────────────────────
+    # ── Generate images serially, writing results after each image ───────────
     results = []
     generated_dir = Path(cfg.get("generated_dir", "static/generated"))
     generated_dir.mkdir(parents=True, exist_ok=True)
@@ -167,16 +177,13 @@ def main():
                 "filename":   filename,
             })
 
-    _write_results(results_path, results)
+        # Write results after EACH image so parent can update UI progressively.
+        # Atomic write (tmp -> rename) prevents parent from reading a partial file.
+        _write_results_atomic(results_path, results)
+        print(f"[zimage_worker] Results updated ({len(results)}/{len(tasks)})", file=sys.stderr)
+
     print(f"[zimage_worker] Done. {len(results)} tasks processed.", file=sys.stderr)
     # Process exits here — OS reclaims all ZImage memory.
-
-
-def _write_results(results_path: Path, results: list):
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(results_path, "w", encoding="utf-8") as f:
-        json.dump({"results": results}, f, ensure_ascii=False, indent=2)
-    print(f"[zimage_worker] Results written to: {results_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

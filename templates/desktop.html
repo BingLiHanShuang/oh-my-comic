@@ -17,12 +17,13 @@
 
   <!-- Top-right Controls -->
   <div class="desktop-controls">
-    <button id="toggle-comic-btn" class="control-btn" title="隐藏/显示连环画" onclick="toggleComic()">
+    <!-- Toggle button text and title are set by desktop.js i18n / 按钮文字和 title 由 desktop.js i18n 设置 -->
+    <button id="toggle-comic-btn" class="control-btn" title="" onclick="toggleComic()">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="2" y="3" width="20" height="14" rx="2"/>
         <path d="M8 21h8M12 17v4"/>
       </svg>
-      <span id="toggle-label">隐藏连环画</span>
+      <span id="toggle-label"></span>
     </button>
     <div id="desktop-status" class="desktop-status"></div>
   </div>
@@ -30,34 +31,45 @@
   <!-- Comic Strip Overlay -->
   <div id="comic-overlay" class="comic-overlay">
 
+    <!-- Keyboard shortcuts hint / 键盘快捷键说明 -->
+    <div id="desktop-shortcuts" class="desktop-shortcuts"></div>
+
     <!-- Segment Info -->
     <div id="segment-info" class="segment-info">
-      <span id="segment-counter">—</span>
+      <span id="segment-counter"></span>
     </div>
 
     <!-- Comic Strip -->
     <div id="comic-strip" class="comic-strip">
 
-      <!-- Previous segment thumbnails -->
+      <!-- Previous segment thumbnails / 上一段缩略图 -->
       <div id="prev-group" class="comic-group comic-group-side comic-group-prev">
-        <div class="group-label">上一段</div>
+        <!-- label text set by desktop.js i18n / 标签文字由 desktop.js i18n 设置 -->
+        <div class="group-label"></div>
         <div id="prev-images" class="group-images"></div>
       </div>
 
-      <!-- Current segment (large) -->
+      <!-- Current segment (large) / 当前段大图 -->
       <div id="curr-group" class="comic-group comic-group-center">
-        <div class="group-label" id="curr-label">当前段</div>
+        <div class="group-label" id="curr-label"></div>
         <div id="curr-images" class="group-images group-images-center"></div>
       </div>
 
-      <!-- Next segment thumbnails -->
+      <!-- Next segment thumbnails / 下一段缩略图 -->
       <div id="next-group" class="comic-group comic-group-side comic-group-next">
-        <div class="group-label">下一段</div>
+        <!-- label text set by desktop.js i18n / 标签文字由 desktop.js i18n 设置 -->
+        <div class="group-label"></div>
         <div id="next-images" class="group-images"></div>
       </div>
 
     </div><!-- /comic-strip -->
   </div><!-- /comic-overlay -->
+
+  <!-- Lightbox for full-screen image view / 图片全屏放大 -->
+  <div id="image-lightbox" class="image-lightbox hidden" onclick="if(event.target===this)closeLightbox()">
+    <img id="image-lightbox-img" src="" alt="" />
+    <button class="lightbox-close" onclick="closeLightbox()" title="Close">✕</button>
+  </div>
 
   <script src="/static/js/desktop.js"></script>
 </body>
