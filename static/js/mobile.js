@@ -13,54 +13,70 @@
   // UI text dictionary supporting zh-CN and en-US.
   var I18N = {
     'zh-CN': {
-      connecting:          '正在连接服务器...',
-      connFailed:          '服务器连接失败，正在重试...',
-      sending:             '正在发送请求...',
-      generating:          '生成中，请稍候...',
-      reqFailed:           '请求失败',
-      netError:            '网络错误: ',
-      generate:            '生成',
-      creativeOff:         '创作模式',
-      creativeOn:          '创作模式 开',
-      creativeTitle:       '创作模式：开启后连续写文本，关闭后统一生图',
-      creativeTitleOn:     '创作模式已开启：连续写文本，关闭后统一生图',
-      creativeTitleWait:   '等待 Qwen 就绪后可开启',
-      creativeTitleReady:  '开启创作模式（需要 Qwen 就绪）',
-      creativeToggleFail:  '切换失败',
-      creativeOffStatus:   '创作模式已关闭，正在启动批量生图...',
-      emptyTitle:          '故事还没有开始。',
-      emptyHint:           '在下方输入你希望故事如何开始，然后点击「生成」。',
-      placeholder:         '输入你希望下一段故事如何发展...',
-      serveOnly:           '当前为只读模式，无法生成新内容。',
-      segLabel:            function (n) { return '第 ' + n + ' 段'; },
-      segStreaming:        function (n) { return '第 ' + n + ' 段 · 生成中…'; },
-      defaultDirection:    '继续故事',
-      imgPreviewAlt:       '预览',
+      connecting:              '正在连接服务器...',
+      connFailed:              '服务器连接失败，正在重试...',
+      sending:                 '正在发送请求...',
+      generating:              '生成中，请稍候...',
+      reqFailed:               '请求失败',
+      netError:                '网络错误: ',
+      generate:                '生成',
+      creativeOff:             '创作模式',
+      creativeOn:              '创作模式 开',
+      creativeTitle:           '创作模式：开启后连续写文本，关闭后统一生图',
+      creativeTitleOn:         '创作模式已开启：连续写文本，关闭后统一生图',
+      creativeTitleWait:       '等待 Qwen 就绪后可开启',
+      creativeTitleReady:      '开启创作模式（需要 Qwen 就绪）',
+      creativeToggleFail:      '切换失败',
+      creativeOffStatus:       '创作模式已关闭，正在启动批量生图...',
+      emptyTitle:              '故事还没有开始。',
+      emptyHint:               '在下方输入你希望故事如何开始，然后点击「生成」。',
+      placeholder:             '输入你希望下一段故事如何发展...',
+      serveOnly:               '当前为只读模式，无法生成新内容。',
+      segLabel:                function (n) { return '第 ' + n + ' 段'; },
+      segStreaming:            function (n) { return '第 ' + n + ' 段 · 生成中…'; },
+      defaultDirection:        '继续故事',
+      imgPreviewAlt:           '预览',
+      starterEntryTitle:       '✨ 快速开始',
+      starterEntrySubtitle:    '点击这里，让 Qwen 为你生成 3 个开场问题',
+      starterLoading:          '正在生成开场问题...',
+      starterSubmit:           '生成随机故事开头',
+      starterCancel:           '取消',
+      starterAnswerAll:        '请回答所有问题后再生成',
+      starterFailed:           '生成开场问题失败，请重试',
+      starterGenerating:       '正在生成随机故事开头...',
     },
     'en-US': {
-      connecting:          'Connecting to server...',
-      connFailed:          'Server connection failed, retrying...',
-      sending:             'Sending request...',
-      generating:          'Generating, please wait...',
-      reqFailed:           'Request failed',
-      netError:            'Network error: ',
-      generate:            'Generate',
-      creativeOff:         'Creative Mode',
-      creativeOn:          'Creative Mode ON',
-      creativeTitle:       'Creative Mode: keep LLM running; images generated when turned off',
-      creativeTitleOn:     'Creative Mode ON: write multiple segments; images generated when turned off',
-      creativeTitleWait:   'Waiting for Qwen LLM to be ready',
-      creativeTitleReady:  'Enable Creative Mode (requires Qwen ready)',
-      creativeToggleFail:  'Toggle failed',
-      creativeOffStatus:   'Creative mode off, starting batch imaging...',
-      emptyTitle:          'The story has not started yet.',
-      emptyHint:           'Enter how you want the story to begin below, then click Generate.',
-      placeholder:         'Enter how you want the next segment to develop...',
-      serveOnly:           'Read-only mode: generation is disabled.',
-      segLabel:            function (n) { return 'Segment ' + n; },
-      segStreaming:        function (n) { return 'Segment ' + n + ' · Generating…'; },
-      defaultDirection:    'Continue the story',
-      imgPreviewAlt:       'Preview',
+      connecting:              'Connecting to server...',
+      connFailed:              'Server connection failed, retrying...',
+      sending:                 'Sending request...',
+      generating:              'Generating, please wait...',
+      reqFailed:               'Request failed',
+      netError:                'Network error: ',
+      generate:                'Generate',
+      creativeOff:             'Creative Mode',
+      creativeOn:              'Creative Mode ON',
+      creativeTitle:           'Creative Mode: keep LLM running; images generated when turned off',
+      creativeTitleOn:         'Creative Mode ON: write multiple segments; images generated when turned off',
+      creativeTitleWait:       'Waiting for Qwen LLM to be ready',
+      creativeTitleReady:      'Enable Creative Mode (requires Qwen ready)',
+      creativeToggleFail:      'Toggle failed',
+      creativeOffStatus:       'Creative mode off, starting batch imaging...',
+      emptyTitle:              'The story has not started yet.',
+      emptyHint:               'Enter how you want the story to begin below, then click Generate.',
+      placeholder:             'Enter how you want the next segment to develop...',
+      serveOnly:               'Read-only mode: generation is disabled.',
+      segLabel:                function (n) { return 'Segment ' + n; },
+      segStreaming:            function (n) { return 'Segment ' + n + ' · Generating…'; },
+      defaultDirection:        'Continue the story',
+      imgPreviewAlt:           'Preview',
+      starterEntryTitle:       '✨ Quick Start',
+      starterEntrySubtitle:    'Tap here — Qwen will generate 3 opening questions for you',
+      starterLoading:          'Generating opening questions...',
+      starterSubmit:           'Generate Random Story Opening',
+      starterCancel:           'Cancel',
+      starterAnswerAll:        'Please answer all questions before generating',
+      starterFailed:           'Failed to generate questions, please try again',
+      starterGenerating:       'Generating random story opening...',
     },
   };
 
@@ -76,12 +92,16 @@
   // Apply i18n to static HTML elements.
   // 将 i18n 应用到静态 HTML 元素。
   function applyI18n() {
-    var emptyHintEl = document.getElementById('empty-hint');
-    if (emptyHintEl) {
-      var ps = emptyHintEl.querySelectorAll('p');
-      if (ps[0]) ps[0].textContent = t('emptyTitle');
-      if (ps[1]) ps[1].textContent = t('emptyHint');
-    }
+    var p1 = document.getElementById('empty-p1');
+    var p2 = document.getElementById('empty-p2');
+    if (p1) p1.textContent = t('emptyTitle');
+    if (p2) p2.textContent = t('emptyHint');
+    var entryTitle = document.getElementById('starter-entry-title');
+    if (entryTitle) entryTitle.textContent = t('starterEntryTitle');
+    var entrySub = document.getElementById('starter-entry-subtitle');
+    if (entrySub) entrySub.textContent = t('starterEntrySubtitle');
+    var submitBtn = document.getElementById('starter-submit-btn');
+    if (submitBtn) submitBtn.textContent = t('starterSubmit');
     var inp = document.getElementById('direction-input');
     if (inp) inp.placeholder = t('placeholder');
     var btnTxt = document.getElementById('btn-text');
@@ -574,6 +594,176 @@
       }).catch(function () {});
     }
   }
+
+  // ── Starter Wizard ─────────────────────────────────────
+  var starterQuestions = [];
+  var starterAnswers   = {};
+  var starterOpen      = false;
+
+  var starterEntry     = document.getElementById('starter-entry');
+  var starterPanel     = document.getElementById('starter-panel');
+  var starterQContainer = document.getElementById('starter-questions-container');
+  var starterSubmitBtn = document.getElementById('starter-submit-btn');
+  var emptyTextHint    = document.getElementById('empty-text-hint');
+
+  window.openStarterWizard = function () {
+    if (isGenerating || isBatchImaging) return;
+    if (storyState.mode === 'serve-only') return;
+    if (storyState.segments && storyState.segments.length > 0) return;
+
+    starterOpen = true;
+    if (starterEntry) starterEntry.style.display = 'none';
+    if (emptyTextHint) emptyTextHint.style.display = 'none';
+    if (starterPanel) starterPanel.classList.remove('hidden');
+    if (starterQContainer) starterQContainer.innerHTML = '';
+    if (starterSubmitBtn) {
+      starterSubmitBtn.disabled = true;
+      starterSubmitBtn.textContent = t('starterLoading');
+    }
+    starterQuestions = [];
+    starterAnswers   = {};
+
+    setStatus(t('starterLoading'), 'info');
+
+    fetch('/api/starter-questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok || !data.questions || !data.questions.length) {
+          setStatus(data.message || t('starterFailed'), 'error');
+          closeStarterWizard();
+          return;
+        }
+        starterQuestions = data.questions;
+        renderStarterQuestions(data.questions);
+        if (starterSubmitBtn) {
+          starterSubmitBtn.textContent = t('starterSubmit');
+          starterSubmitBtn.disabled = true;
+        }
+        setStatus('', 'info');
+      })
+      .catch(function (err) {
+        setStatus(t('netError') + err.message, 'error');
+        closeStarterWizard();
+      });
+  };
+
+  function renderStarterQuestions(questions) {
+    if (!starterQContainer) return;
+    starterQContainer.innerHTML = '';
+    questions.forEach(function (q) {
+      var block = document.createElement('div');
+      block.className = 'starter-question-block';
+
+      var label = document.createElement('div');
+      label.className = 'starter-question-label';
+      label.textContent = q.question;
+      block.appendChild(label);
+
+      var optRow = document.createElement('div');
+      optRow.className = 'starter-options-row';
+
+      (q.options || []).forEach(function (opt) {
+        var btn = document.createElement('button');
+        btn.className = 'starter-option-btn';
+        btn.textContent = opt;
+        btn.dataset.qid = q.id;
+        btn.dataset.value = opt;
+        btn.addEventListener('click', function () {
+          // Deselect siblings
+          optRow.querySelectorAll('.starter-option-btn').forEach(function (b) {
+            b.classList.remove('selected');
+          });
+          btn.classList.add('selected');
+          starterAnswers[q.id] = { question: q.question, answer: opt };
+          updateStarterSubmitState();
+        });
+        optRow.appendChild(btn);
+      });
+
+      block.appendChild(optRow);
+      starterQContainer.appendChild(block);
+    });
+  }
+
+  function updateStarterSubmitState() {
+    if (!starterSubmitBtn || !starterQuestions.length) return;
+    var allAnswered = starterQuestions.every(function (q) {
+      return starterAnswers[q.id] !== undefined;
+    });
+    starterSubmitBtn.disabled = !allAnswered;
+    starterSubmitBtn.title = allAnswered ? '' : t('starterAnswerAll');
+  }
+
+  window.closeStarterWizard = function () {
+    starterOpen = false;
+    starterQuestions = [];
+    starterAnswers   = {};
+    if (starterPanel) starterPanel.classList.add('hidden');
+    if (starterEntry) starterEntry.style.display = '';
+    if (emptyTextHint) emptyTextHint.style.display = '';
+  };
+
+  window.submitStarterAnswers = function () {
+    if (isGenerating || isBatchImaging) return;
+    if (!starterQuestions.length) return;
+    var allAnswered = starterQuestions.every(function (q) {
+      return starterAnswers[q.id] !== undefined;
+    });
+    if (!allAnswered) {
+      setStatus(t('starterAnswerAll'), 'warning');
+      return;
+    }
+
+    var answersArr = starterQuestions.map(function (q) {
+      return starterAnswers[q.id];
+    });
+
+    // Build a user-visible summary for the pending bubble
+    var summaryParts = answersArr.map(function (a) { return a.answer; });
+    var summaryText = '✨ ' + summaryParts.join(' · ');
+
+    // Close wizard and show pending bubble
+    if (starterPanel) starterPanel.classList.add('hidden');
+    if (starterEntry) starterEntry.style.display = 'none';
+    if (emptyTextHint) emptyTextHint.style.display = 'none';
+    showPendingUserBubble(summaryText, false);
+
+    setGenerating(true);
+    setStatus(t('starterGenerating'), 'info');
+
+    fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        direction: summaryText,
+        starter_answers: answersArr,
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) {
+          removePendingUserBubble();
+          setStatus(data.message || t('reqFailed'), 'error');
+          setGenerating(false);
+          closeStarterWizard();
+        } else {
+          starterOpen = false;
+          starterQuestions = [];
+          starterAnswers   = {};
+          setStatus(t('generating'), 'info');
+        }
+      })
+      .catch(function (err) {
+        removePendingUserBubble();
+        setStatus(t('netError') + err.message, 'error');
+        setGenerating(false);
+        closeStarterWizard();
+      });
+  };
 
   // ── Init ───────────────────────────────────────────────
   setStatus(t('connecting'), 'info');
