@@ -1,21 +1,54 @@
 # Web framework
+# Web 框架
 flask>=3.0.0
 
 # LLM client (connects to local llama-server)
+# LLM 客户端（连接本地 llama-server）
 openai>=1.30.0
 
 # SDXL / ZImage image generation (Diffusers)
-torch>=2.1.0
-diffusers>=0.27.0
-transformers>=4.38.0
+# SDXL / ZImage 图像生成（Diffusers）
+# Recommended / 推荐版本:
+#   torch==2.5.1
+#   diffusers==0.38.0
+#   transformers==4.57.3
+torch==2.5.1
+diffusers==0.38.0
+transformers==4.57.3
 accelerate>=0.27.0
 safetensors>=0.4.0
+
+# xformers — optional, used by SDXL for memory-efficient attention
+# xformers — 可选，SDXL 使用的内存高效注意力机制
+# Install a version matching your torch+CUDA combination.
+# 请安装与你的 torch+CUDA 版本匹配的 xformers。
 xformers>=0.0.23
 
+# flash-attention2 — optional, required for ZImage attention backend
+# flash-attention2 — 可选，ZImage attention backend 需要
+# On Windows, install a pre-built wheel from:
+# Windows 下请从以下地址下载预编译 wheel 安装：
+#   https://github.com/kingbri1/flash-attention/releases
+# Recommended / 推荐版本: flash_attn==2.7.4.post1
+# Do NOT install via plain "pip install flash-attn" on Windows — it will fail to compile.
+# Windows 下不要直接 pip install flash-attn，会编译失败。
+# flash-attn==2.7.4.post1  # install manually from pre-built wheel / 手动安装预编译 wheel
+
 # Qwen Edit image generation (stable_diffusion_cpp)
+# Qwen Edit 图像生成（stable_diffusion_cpp）
+# Must be compiled from source with CUDA support:
+# 必须从源码编译并启用 CUDA 支持：
+#   git clone https://github.com/william-murray1204/stable-diffusion-cpp-python
+#   cd stable-diffusion-cpp-python
+#   set CMAKE_ARGS=-DSD_CUDA=ON   (Windows CMD)
+#   $env:CMAKE_ARGS="-DSD_CUDA=ON"  (Windows PowerShell)
+#   pip install .
+# Do NOT install via plain "pip install stable-diffusion-cpp-python" — it will not have CUDA.
+# 不要直接 pip install stable-diffusion-cpp-python，那样不会启用 CUDA。
 stable-diffusion-cpp-python>=0.2.0
 
 # Utilities
+# 工具库
 requests>=2.31.0
 python-dotenv>=1.0.0
 Pillow>=10.0.0

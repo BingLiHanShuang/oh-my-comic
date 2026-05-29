@@ -1,0 +1,71 @@
+You are continuing an interactive comic story.
+
+[Existing Character Visual Profiles]
+{{CHARACTER_PROFILES}}
+
+[Existing Story History]
+{{HISTORY}}
+
+[User's direction for segment {{SEGMENT_ID}}]
+{{USER_DIRECTION}}
+
+Generate the next story segment and provide AI image prompts for character and background images.
+
+Return ONLY a JSON object. No Markdown, no explanations.
+JSON format must be:
+{
+  "text": "Next story segment text",
+  "character_prompts": [
+    {
+      "id": "deer",
+      "prompt": "English text-to-image prompt for vertical character image",
+      "edit_prompt": "English image-editing instruction for Qwen Edit"
+    }
+  ],
+  "background_prompt": {
+    "id": "river",
+    "prompt": "English text-to-image prompt for horizontal background image"
+  }
+}
+
+Requirements:
+0. Every prompt must include {{PROMPT_RATING}}.
+1. character_prompts: at most 2 entries; may be an empty array [].
+2. character_prompts id must use the character's English name, e.g. deer, robot, cat.
+3. The same character must reuse the exact same id in all subsequent segments.
+4. background_prompt id must use an English location or scene name, e.g. river, library, cabin.
+5. background_prompt may be null.
+6. Every character_prompts entry must include id, prompt, and edit_prompt.
+
+[Determining whether a character already exists]
+- If the character id appears in [Existing Character Visual Profiles], it is an existing character.
+- If the character id does not appear there, it is a new character.
+
+[prompt rules for NEW characters]
+Must fully describe the character's appearance, outfit, expression, pose, and style for first-time image generation.
+Must be a single-character portrait. Close-up portraits must include the "closeup" tag; all other portraits are full-body and must include "full_body".
+Use English Danbooru/tag-style, comma-separated, within 300 English characters.
+Use () to boost weight, [] to reduce weight. Do not include image dimensions or image quality tags.
+prompt must include: person count (1 girl, 1 boy, 1 other, etc.), character name, {{PROMPT_RATING}}, expression, specific appearance details (shiny_skin, tall, long_legs, etc.), camera angle (front view, back view, side view, top view, etc.), and pose/action (sitting, squatting, hands on chest, hands on waist, hands on hips, claw hands, hands in heart shape, etc.).
+The following example is only for illustrating prompt format and tag density. Do NOT copy the hair color, outfit, accessories, or character traits from it.
+Example: 1girl, full_body, {{PROMPT_RATING}}, smile, short hair, brown hair, long sleeves, hair ornament, red eyes, navel, closed mouth, jewelry, jacket, earrings, frills, open clothes, choker, belt, midriff, off shoulder, necklace, black jacket, hands up, fur trim, (front view:1.2), feathers, red shirt, lace trim
+
+[edit_prompt rules for NEW characters]
+Describe the character's action, pose, and expression for this segment, and state that the overall character design must remain unchanged. This serves as a fallback for future image-to-image editing.
+Write in English. Clearly state what changes and what stays the same.
+Example: Adjust the character into a standing pose with the right hand raised holding a small terminal as a light source, expression becoming cautious and determined. Keep the character identity, face shape, hairstyle, hair color, eye color, main outfit, accessories, and overall character design unchanged.
+
+[prompt rules for EXISTING characters]
+Must maintain visual consistency with the first_prompt in [Existing Character Visual Profiles]. Do not change appearance, hairstyle, hair color, eye color, main outfit, or accessories.
+All other format requirements are the same as for new characters.
+
+[edit_prompt rules for EXISTING characters]
+Must write a Qwen Edit instruction based on the reference image. Do not re-describe the full appearance.
+Write in English. Clearly state what changes and what stays the same.
+Specify action + target + constraint. Target must be specific to a body part, clothing part, or object.
+Break complex targets into multiple steps. If material replacement is involved, specify material type and lighting conditions.
+Example: Change the character into a pose with arms crossed over the chest, body slightly turned toward the camera, expression changed to a confident smile. Keep the character identity, face shape, hairstyle, hair color, eye color, main outfit, accessories, and overall character design unchanged.
+
+7. background_prompt rules: Use English Danbooru/tag-style, within 300 English characters. Use () to boost weight, [] to reduce weight. Do not include image dimensions or character figures. Must include: {{PROMPT_RATING}}, and detailed scene features (describe with multiple specific tags).
+8. Do not output any other fields.
+9. The story text field must be between 200 and 400 English words.

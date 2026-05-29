@@ -1,5 +1,245 @@
 # oh-my-comic WebUI
 
+> **English README** is below. **中文说明**请见本文件下半部分。
+
+---
+
+## English README
+
+A locally-deployed interactive comic story system powered by llama-server (LLM), SDXL / ZImage, and Qwen Edit image generation.
+
+- **Mobile (port 5001)**: Story text display, direction input, image upload, creative mode toggle
+- **Desktop (port 5002)**: Full-screen background, comic strip character portraits, auto-sync with mobile scroll
+
+---
+
+### Features
+
+#### Normal Mode
+
+```
+User inputs direction
+→ LLM generates story JSON (text + character prompt + edit_prompt + background prompt)
+→ LLM shuts down, VRAM freed
+→ New characters: SDXL or ZImage text-to-image (SDXL batched; ZImage serial)
+→ Recurring characters: Qwen Edit img2img (sdxl_hybrid / zimage_hybrid mode, serial)
+→ LLM pre-warmed again after image generation
+```
+
+#### Creative Mode
+
+```
+Enable creative mode (requires LLM ready)
+→ LLM stays running
+→ User writes multiple segments; only text is generated, no images
+→ Disable creative mode
+→ LLM shuts down, VRAM freed
+→ All pending images generated in one batch
+→ LLM pre-warmed again
+```
+
+#### Image Upload (Multimodal)
+
+```
+User uploads 1 image + text
+→ LLM (requires LLAMA_MMPROJ_MODEL) parses image content
+→ Backend injects "only the uploaded character this round" constraint (one-time, not stored in history)
+→ Image description + user text + constraint merged as story input
+→ LLM generates story JSON
+→ Only background image generated; no character image generated
+→ If JSON contains character_prompts[0].id, uploaded image is bound as that character's portrait
+→ That character uses Qwen Edit for consistency in all future segments
+```
+
+---
+
+### Hardware Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| VRAM | 16 GB | 24 GB+ |
+| RAM | 32 GB | 64 GB+ |
+| GPU | RTX 4080 | RTX 4090 |
+| Estimated time per round | — | 120–150 seconds |
+
+---
+
+### Installation
+
+#### 1. Python dependencies
+
+```bat
+pip install -r requirements.txt
+```
+
+> **Note:** `torch==2.5.1`, `diffusers==0.38.0`, `transformers==4.57.3` are the recommended versions.
+
+#### 2. stable-diffusion-cpp-python (Qwen Edit — must compile from source with CUDA)
+
+```bat
+git clone https://github.com/william-murray1204/stable-diffusion-cpp-python
+cd stable-diffusion-cpp-python
+```
+
+Windows CMD:
+```bat
+set CMAKE_ARGS=-DSD_CUDA=ON
+pip install .
+```
+
+Windows PowerShell:
+```powershell
+$env:CMAKE_ARGS="-DSD_CUDA=ON"
+pip install .
+```
+
+> Do **NOT** install via `pip install stable-diffusion-cpp-python` directly — it will not have CUDA support.
+
+#### 3. llama.cpp (LLM server)
+
+Download and compile llama.cpp with CUDA 12.4, or use a pre-built release:
+
+- Source: https://github.com/ggml-org/llama.cpp
+- Pre-built releases: https://github.com/ggml-org/llama.cpp/releases
+
+#### 4. flash-attention2 (optional, required for ZImage attention backend)
+
+On Windows, install a pre-built wheel matching your Python + CUDA + torch version:
+
+- Pre-built wheels: https://github.com/kingbri1/flash-attention/releases
+- Recommended version: `flash_attn==2.7.4.post1`
+
+> Do **NOT** run `pip install flash-attn` on Windows — it will fail to compile.
+
+#### 5. Configure environment
+
+```bat
+copy .env.example .env
+```
+
+Fill in your model paths and settings.
+
+#### 6. Run
+
+Mock mode (no models required, for UI testing):
+```bat
+python app.py --mock
+```
+
+Real mode:
+```bat
+python app.py
+```
+
+Read-only mode (display existing story, no generation):
+```bat
+python app.py --serve-only
+```
+
+---
+
+### Access
+
+After startup, the terminal shows:
+
+```
+  oh-my-comic WebUI
+  Mobile  : http://192.168.1.x:5001
+  Desktop : http://127.0.0.1:5002
+```
+
+- **Mobile**: Connect to the same LAN, open `http://<PC_LAN_IP>:5001`
+- **Desktop**: Open `http://127.0.0.1:5002`
+
+---
+
+### Project Structure
+
+```
+oh-my-comic/
+├── app.py                              # Main application
+├── requirements.txt                    # Python dependencies
+├── .env.example                        # Config template (copy to .env and fill in)
+├── zimage_worker.py                    # ZImage subprocess worker
+├── data/
+│   ├── story.json                      # Story data (auto-generated at runtime)
+│   ├── raw_llm_response.txt            # Raw LLM output (for debugging)
+│   ├── last_error.txt                  # Last error details (for debugging)
+│   └── uploads/                        # User-uploaded images (auto-created)
+├── static/
+│   ├── css/style.css
+│   ├── js/
+│   │   ├── mobile.js
+│   │   └── desktop.js
+│   └── generated/                      # Generated images (auto-created)
+├── templates/
+│   ├── mobile.html                     # Mobile page
+│   └── desktop.html                    # Desktop page
+└── prompts/
+    ├── story_system_prompt.txt         # System prompt (Chinese, customizable)
+    ├── story_system_prompt_en.txt      # System prompt (English)
+    ├── story_user_template.txt         # SDXL / sdxl_hybrid template (Chinese)
+    ├── story_user_template_en.txt      # SDXL / sdxl_hybrid template (English)
+    ├── story_user_template_zimage.txt  # ZImage / zimage_hybrid template (Chinese)
+    └── story_user_template_zimage_en.txt  # ZImage / zimage_hybrid template (English)
+```
+
+---
+
+### Key Configuration (`.env`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UI_LANGUAGE` | `zh-CN` | WebUI language: `zh-CN` or `en-US` |
+| `STORY_LANGUAGE` | `zh-CN` | LLM story output language: `zh-CN` or `en-US`. Defaults to `UI_LANGUAGE` if not set. |
+| `ENABLE_BACKGROUND_GENERATION` | `true` | Set to `false` to skip background image generation entirely, regardless of `IMAGE_GENERATION_MODE`. |
+| `IMAGE_GENERATION_MODE` | `sdxl_only` | `sdxl_only` / `sdxl_hybrid` / `zimage_hybrid` |
+| `PROMPT_RATING` | `general` | `general` / `sensitive` / `questionable` / `explicit` |
+| `ZIMAGE_RUN_MODE` | `subprocess` | `subprocess` (recommended) / `inprocess` |
+
+#### Image Generation Modes
+
+| Mode | Base engine | Recurring characters | Prompt template | Style |
+|------|-------------|---------------------|-----------------|-------|
+| `sdxl_only` | SDXL (batch) | SDXL | `story_user_template[_en].txt` | Anime |
+| `sdxl_hybrid` | SDXL (batch) | Qwen Edit | `story_user_template[_en].txt` | Anime |
+| `zimage_hybrid` | ZImage (serial) | Qwen Edit | `story_user_template_zimage[_en].txt` | Realistic |
+
+#### Language Settings
+
+- `UI_LANGUAGE=en-US` → WebUI buttons, status messages, and API responses in English
+- `STORY_LANGUAGE=en-US` → LLM generates story text and prompts in English; English prompt templates are used automatically
+- Both can be set independently. Example: `UI_LANGUAGE=en-US` + `STORY_LANGUAGE=zh-CN` = English UI, Chinese story.
+
+#### ZImage Memory Note
+
+ZImage + accelerate CPU offload may leave CPU RAM residue in a long-running process. The default `ZIMAGE_RUN_MODE=subprocess` runs ZImage in a child process; when the child exits, the OS reclaims all memory, so Qwen Edit is not slowed down.
+
+---
+
+### FAQ
+
+**Q: Mobile cannot access port 5001**
+A: Check Windows Defender Firewall — allow Python inbound on port 5001.
+
+**Q: llama-server startup timeout**
+A: A 27B model may take 1–2 minutes to load. The status bar shows elapsed time.
+
+**Q: LLM returns Chinese even when I type in English**
+A: Set `STORY_LANGUAGE=en-US` in `.env`. This switches to the English prompt templates, which instruct the LLM to output English story text and prompts.
+
+**Q: How to disable background image generation**
+A: Set `ENABLE_BACKGROUND_GENERATION=false` in `.env`. Background prompts are still generated by the LLM (for reference), but no background images are created.
+
+**Q: ZImage leaves high CPU RAM after generation, slowing down Qwen Edit**
+A: This is a known issue with ZImagePipeline + accelerate offload in a long-running process. The default `ZIMAGE_RUN_MODE=subprocess` solves this by running ZImage in a child process that exits after generation, letting the OS reclaim all memory.
+
+---
+
+---
+
+# oh-my-comic WebUI 中文说明
+
 一个基于本地部署的 LLM（llama-server）、SDXL / ZImage 和 Qwen Edit 画图模型运行的自由创作互动连环画系统。
 
 - **手机端（5001 端口）**：展示故事文本和用户消息，输入下一段剧情方向，支持上传图片，支持创作模式开关
