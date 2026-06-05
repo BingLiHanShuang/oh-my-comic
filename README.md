@@ -238,6 +238,17 @@ ZImage + accelerate CPU offload may leave CPU RAM residue in a long-running proc
 
 ---
 
+## How to restart:
+
+Delete these files and restart: python app.py
+
+```bat
+del data
+del static\generated
+```
+
+---
+
 ### FAQ
 
 **Q: Mobile cannot access port 5001**
@@ -374,6 +385,46 @@ oh-my-comic/
 ```bat
 pip install -r requirements.txt
 ```
+
+> **注意** 建议版本： `torch==2.5.1`, `diffusers==0.38.0`, `transformers==4.57.3`
+
+#### 2. stable-diffusion-cpp-python (Qwen Edit — 必须要基于CUDA编译)
+
+```bat
+git clone https://github.com/william-murray1204/stable-diffusion-cpp-python
+cd stable-diffusion-cpp-python
+```
+
+Windows CMD命令:
+```bat
+set CMAKE_ARGS=-DSD_CUDA=ON
+pip install .
+```
+
+Windows PowerShell命令:
+```powershell
+$env:CMAKE_ARGS="-DSD_CUDA=ON"
+pip install .
+```
+
+> **不要** 直接 `pip install stable-diffusion-cpp-python` 安装，因为这样不使用GPU运算。如果有符合你的python库（比如torch python版本）预编译安装包可以不用自行编译。
+
+#### 3. llama.cpp (LLM server)
+
+基于 CUDA 12.4 下载并编译 llama.cpp ,或者使用预编译版本（推荐）:
+
+- Source: https://github.com/ggml-org/llama.cpp
+- Pre-built releases: https://github.com/ggml-org/llama.cpp/releases
+
+#### 4. flash-attention2 (ZImage 部分需要)
+
+在 Windows 上,安装符合你的 Python + CUDA + torch 组合的预编译版本:
+
+- 预编译版本: https://github.com/kingbri1/flash-attention/releases
+- 推荐版本: `flash_attn==2.7.4.post1`
+
+> **不要** 直接在Windows上 `pip install flash-attn` 因为这样大概率会失败=.=
+
 
 ### 2. 配置环境变量
 
